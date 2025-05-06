@@ -1,0 +1,25 @@
+services:
+  # API Service
+  - type: web
+    name: solana-trading-bot-api
+    env: node
+    plan: free # TODO: Review for production needs (standard or pro plan recommended)
+    buildCommand: npm install
+    startCommand: node api/index.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SOLANA_NETWORK
+        value: mainnet-beta # Updated for production
+      - key: SOLANA_RPC_URL
+        sync: false # Will be manually set in Render dashboard for security
+      - key: FEE_COLLECTOR_PUBKEY
+        value: FKS2idx6M1WyBeWtMr2tY9XSFsVvKNy84rS9jq9W1qfo
+      - key: DEFAULT_FEE_BPS
+        value: 10
+      - key: CORS_ORIGIN
+        value: "https://your-frontend-app.com" # TODO: Replace with your actual frontend domain
+      - key: LOG_LEVEL
+        value: info
+    healthCheckPath: /
+    autoDeploy: true 
