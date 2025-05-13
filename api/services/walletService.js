@@ -1,4 +1,4 @@
-const { Keypair, Connection, PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL } = require('@solana/web3.js');
+const { Keypair, Connection, PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL, ComputeBudgetProgram } = require('@solana/web3.js');
 const bs58 = require('bs58');
 const path = require('path');
 const fs = require('fs');
@@ -159,7 +159,7 @@ async function fundChildWallets(motherWalletPrivateKeyBase58, childWallets) {
     
     // Calculate total funding amount and check if mother wallet has enough balance
     const totalFundingAmount = childWallets.reduce((total, wallet) => total + wallet.amountSol, 0);
-    const estimatedFees = 0.000005 * childWallets.length; // Rough estimate of transaction fees
+    const estimatedFees = 0.00001 * childWallets.length; // Updated: Rough estimate of transaction fees (0.000005 regular + 0.000005 priority per tx)
     const totalRequired = totalFundingAmount + estimatedFees;
     
     if (motherBalanceInSol < totalRequired) {
@@ -203,6 +203,13 @@ async function fundChildWallets(motherWalletPrivateKeyBase58, childWallets) {
           blockhash,
           lastValidBlockHeight
         }).add(instruction);
+        
+        // Add priority fee instruction
+        transaction.add(
+          ComputeBudgetProgram.setComputeUnitPrice({
+            microLamports: 5 // 0.000005 SOL priority fee
+          })
+        );
         
         // Sign transaction
         transaction.sign(motherWallet);
@@ -317,25 +324,27 @@ async function returnFundsToMotherWallet(childWalletPrivateKeyBase58, motherWall
     console.log(`Child wallet balance: ${childBalanceInSol} SOL`);
     
     // Check if the wallet has enough funds to return
-    const minimumTransactionFee = 5000; // 0.000005 SOL for transaction fee
+    const regularTransactionFee = 5000; // 0.000005 SOL for regular transaction fee
+    const priorityTransactionFee = 5000; // 0.000005 SOL for priority fee
+    const totalTransactionFee = regularTransactionFee + priorityTransactionFee; // 0.00001 SOL total
     
-    if (childBalance <= minimumTransactionFee) {
-      throw new Error(`Insufficient funds in child wallet. Balance (${childBalanceInSol} SOL) is too low to cover transaction fees.`);
+    if (childBalance <= totalTransactionFee) {
+      throw new Error(`Insufficient funds in child wallet. Balance (${childBalanceInSol} SOL) is too low to cover transaction fees (0.00001 SOL).`);
     }
     
     // Calculate amount to return, leaving some for transaction fees if returnAllFunds is false
     let amountToReturn;
     if (returnAllFunds) {
-      // Return all but leave just enough for the transaction fee
-      amountToReturn = childBalance - minimumTransactionFee;
+      // Return all but leave just enough for the total transaction fee
+      amountToReturn = childBalance - totalTransactionFee;
     } else {
       // Return all but leave a small amount for potential future transactions (0.001 SOL)
       const bufferAmount = 1000000; // 0.001 SOL in lamports
-      amountToReturn = childBalance - bufferAmount - minimumTransactionFee;
+      amountToReturn = childBalance - bufferAmount - totalTransactionFee;
       
-      // If the buffer would leave too little, just return all minus the transaction fee
+      // If the buffer would leave too little, just return all minus the total transaction fee
       if (amountToReturn <= 0) {
-        amountToReturn = childBalance - minimumTransactionFee;
+        amountToReturn = childBalance - totalTransactionFee;
       }
     }
     
@@ -360,6 +369,13 @@ async function returnFundsToMotherWallet(childWalletPrivateKeyBase58, motherWall
       blockhash,
       lastValidBlockHeight
     }).add(instruction);
+    
+    // Add priority fee instruction
+    transaction.add(
+      ComputeBudgetProgram.setComputeUnitPrice({
+        microLamports: 5 // 0.000005 SOL priority fee
+      })
+    );
     
     // Sign transaction
     transaction.sign(childWallet);
