@@ -85,8 +85,8 @@ function addPriorityFeeInstructions(transaction, priorityFeeMicrolamports = 1000
 }
 
 /**
- * IMMEDIATE confirmation strategy to avoid block height exceeded errors
- * This is the core fix based on research - confirm immediately after sending
+ * SIMPLIFIED confirmation strategy that works with the proper confirmTransaction API
+ * Based on official Solana documentation and working implementations
  * @param {web3.Connection} connection - Solana connection object
  * @param {string} signature - Transaction signature
  * @param {string} blockhash - Recent blockhash used in transaction
@@ -94,57 +94,29 @@ function addPriorityFeeInstructions(transaction, priorityFeeMicrolamports = 1000
  * @param {web3.Commitment} commitment - Commitment level
  * @returns {Promise<object>} Confirmation result
  */
-async function confirmTransactionImmediately(connection, signature, blockhash, lastValidBlockHeight, commitment = 'confirmed') {
-    console.log(`[TransactionUtils] Starting IMMEDIATE confirmation strategy...`);
+async function confirmTransactionProperly(connection, signature, blockhash, lastValidBlockHeight, commitment = 'confirmed') {
+    console.log(`[TransactionUtils] Starting PROPER confirmation strategy for signature: ${signature.slice(0, 8)}...`);
     
-    const startTime = Date.now();
-    const maxConfirmationTime = 25000; // 25 seconds max - well under block height expiry
-    let attempts = 0;
-    const maxAttempts = 50; // Many quick attempts instead of fewer slow ones
-    
-    while (attempts < maxAttempts && (Date.now() - startTime) < maxConfirmationTime) {
-        try {
-            attempts++;
-            
-            // Check current block height to see if we're getting close to expiry
-            const currentSlot = await connection.getSlot(commitment);
-            if (currentSlot > lastValidBlockHeight - 5) {
-                throw new Error(`Approaching block height limit. Current: ${currentSlot}, Limit: ${lastValidBlockHeight}`);
-            }
-            
-            // Immediate confirmation attempt
-            const confirmation = await connection.confirmTransaction({
-                signature: signature,
-                blockhash: blockhash,
-                lastValidBlockHeight: lastValidBlockHeight
-            }, commitment);
-            
-            if (confirmation.value.err) {
-                throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`);
-            }
-            
-            const confirmationTime = Date.now() - startTime;
-            console.log(`[TransactionUtils] ✅ Transaction confirmed immediately on attempt ${attempts} in ${confirmationTime}ms`);
-            return confirmation;
-            
-        } catch (error) {
-            // Block height exceeded is a hard failure - don't retry
-            if (error.message.includes('block height exceeded') || error.message.includes('block height')) {
-                console.error(`[TransactionUtils] 🚫 Block height exceeded - immediate failure`);
-                throw error;
-            }
-            
-            if (attempts >= maxAttempts) {
-                throw new Error(`Immediate confirmation failed after ${maxAttempts} attempts: ${error.message}`);
-            }
-            
-            // Very short delay between attempts - aggressive polling
-            const quickDelay = Math.min(attempts * 100, 500); // 100ms to 500ms max
-            await sleep(quickDelay);
+    try {
+        // Use the official confirmTransaction method with the proper signature
+        // This is the CORRECT way according to Solana documentation
+        const confirmation = await connection.confirmTransaction({
+            signature: signature,
+            blockhash: blockhash,
+            lastValidBlockHeight: lastValidBlockHeight
+        }, commitment);
+        
+        if (confirmation.value.err) {
+            throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`);
         }
+        
+        console.log(`[TransactionUtils] ✅ Transaction confirmed successfully!`);
+        return confirmation;
+        
+    } catch (error) {
+        console.error(`[TransactionUtils] ❌ Confirmation failed: ${error.message}`);
+        throw error;
     }
-    
-    throw new Error('Immediate confirmation timed out - block height may have exceeded');
 }
 
 /**
@@ -163,8 +135,8 @@ function calculateTransactionFee(priorityFeeMicrolamports = 100000, computeUnitL
 }
 
 /**
- * Enhanced transaction sender with IMMEDIATE confirmation to avoid block height exceeded
- * This follows the proven sendAndConfirmTransaction pattern but with immediate confirmation
+ * Enhanced transaction sender with PROPER confirmation to avoid block height exceeded
+ * Uses the correct confirmTransaction pattern with proper blockhash handling
  * @param {web3.Connection} connection - Solana connection object.
  * @param {web3.Transaction} transaction - The transaction to send.
  * @param {web3.Signer[]} signers - Array of signers for the transaction.
@@ -185,7 +157,7 @@ async function sendAndConfirmTransactionWrapper(connection, transaction, signers
         computeUnitLimit = 200000
     } = options;
 
-    console.log(`[TransactionUtils] Starting IMMEDIATE transaction strategy with ${maxRetries} max retries`);
+    console.log(`[TransactionUtils] Starting PROPER transaction strategy with ${maxRetries} max retries`);
     console.log(`[TransactionUtils] Configuration: skipPreflight=${skipPreflight}, commitment=${commitment}`);
 
     // Add priority fee instructions
@@ -222,8 +194,8 @@ async function sendAndConfirmTransactionWrapper(connection, transaction, signers
             console.log(`[TransactionUtils] Transaction sent: ${signature}`);
             console.log(`[TransactionUtils] Solscan: https://solscan.io/tx/${signature}?cluster=mainnet-beta`);
 
-            // IMMEDIATE confirmation - the key fix!
-            await confirmTransactionImmediately(
+            // PROPER confirmation using the official confirmTransaction API
+            await confirmTransactionProperly(
                 connection, 
                 signature, 
                 latestBlockhash.blockhash, 
@@ -392,5 +364,6 @@ module.exports = {
     getDynamicPriorityFee,
     getRecentBlockhash,
     calculateTransactionFee,
+    confirmTransactionProperly,
     sleep
 }; 

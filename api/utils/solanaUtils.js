@@ -1,12 +1,14 @@
 const { Connection } = require('@solana/web3.js');
 
-// Single reliable RPC endpoint - keep it simple
-const MAINNET_URL = 'https://api.mainnet-beta.solana.com';
+// Get RPC URL from environment variable or use default mainnet-beta
+const MAINNET_URL = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
+
+console.log(`[SolanaUtils] Using RPC endpoint: ${MAINNET_URL}`);
 
 // Create connection with optimized settings for fast confirmation
 let connection = new Connection(MAINNET_URL, {
   commitment: 'confirmed',
-  confirmTransactionInitialTimeout: 30000, // Reduced to 30 seconds
+  confirmTransactionInitialTimeout: 60000, // Increased timeout for better confirmation
   wsEndpoint: undefined // Disable WebSocket for more predictable behavior
 });
 
