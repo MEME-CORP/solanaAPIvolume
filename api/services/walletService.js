@@ -144,7 +144,7 @@ async function deriveChildWallets(motherWalletPublicKey, count = 3, saveToFile =
 }
 
 /**
- * Funds multiple child wallets from a mother wallet using enhanced transaction handling.
+ * Funds multiple child wallets from a mother wallet using IMMEDIATE confirmation strategy.
  * @param {string} motherWalletPrivateKeyBase58 - The mother wallet's private key in base58 encoding.
  * @param {Array<{publicKey: string, amountSol: number}>} childWallets - Array of child wallets to fund.
  * @returns {Promise<{status: string, results: Array, motherWalletFinalBalanceSol: number}>}
@@ -152,7 +152,7 @@ async function deriveChildWallets(motherWalletPublicKey, count = 3, saveToFile =
  */
 async function fundChildWallets(motherWalletPrivateKeyBase58, childWallets) {
   try {
-    console.log(`[WalletService] Starting enhanced funding process for ${childWallets.length} child wallets`);
+    console.log(`[WalletService] Starting IMMEDIATE funding for ${childWallets.length} child wallets`);
     
     // Decode mother wallet private key
     const motherSecretKey = bs58.decode(motherWalletPrivateKeyBase58);
@@ -240,29 +240,29 @@ async function fundChildWallets(motherWalletPrivateKeyBase58, childWallets) {
           amountLamports
         );
         
-        // Add strategic delay between transactions (longer for rate limiting protection)
-        if (i > 0) {
-          const delayTime = Math.min(2000 + (consecutiveFailures * 1000), 5000); // Adaptive delay
-          console.log(`[WalletService] Adding ${delayTime}ms delay before sending transaction...`);
-          await delay(delayTime);
+        // MINIMAL delay between transactions - only if needed for rate limiting
+        if (i > 0 && consecutiveFailures === 0) {
+          const minimalDelay = 500; // Reduced from 2000ms+ to 500ms
+          console.log(`[WalletService] Brief ${minimalDelay}ms delay for rate limiting...`);
+          await delay(minimalDelay);
         }
         
-        // Send transaction using enhanced wrapper
-        console.log(`[WalletService] Sending transaction with enhanced retry logic...`);
+        // Send transaction using IMMEDIATE confirmation strategy
+        console.log(`[WalletService] Sending transaction with IMMEDIATE confirmation...`);
         const signature = await sendAndConfirmTransactionWrapper(
           connection,
           transaction,
           [motherWallet],
           {
             skipPreflight: false,
-            maxRetries: 3, // Reduced retries for faster failure detection
+            maxRetries: 3,
             commitment: 'confirmed',
             priorityFeeMicrolamports: dynamicPriorityFee,
             computeUnitLimit: 200000
           }
         );
         
-        console.log(`[WalletService] ✅ Funding confirmed successfully!`);
+        console.log(`[WalletService] ✅ Funding SUCCESS!`);
         
         // Get updated balance
         const newBalance = await retry(async () => await connection.getBalance(childPublicKey));
@@ -296,9 +296,9 @@ async function fundChildWallets(motherWalletPrivateKeyBase58, childWallets) {
           break;
         }
         
-        // Add extra delay after failures
+        // Minimal delay after failures - don't wait too long
         if (consecutiveFailures > 1) {
-          const errorDelayTime = 5000 * consecutiveFailures;
+          const errorDelayTime = 1000 * consecutiveFailures; // Reduced from 5000ms
           console.log(`[WalletService] Adding ${errorDelayTime}ms delay after consecutive failures...`);
           await delay(errorDelayTime);
         }
@@ -341,7 +341,7 @@ async function fundChildWallets(motherWalletPrivateKeyBase58, childWallets) {
 }
 
 /**
- * Returns funds from a child wallet to a mother wallet using enhanced transaction handling.
+ * Returns funds from a child wallet to a mother wallet using IMMEDIATE confirmation strategy.
  * @param {string} childWalletPrivateKeyBase58 - The child wallet's private key in base58 encoding.
  * @param {string} motherWalletPublicKey - The mother wallet's public key in base58 encoding.
  * @param {boolean} returnAllFunds - Whether to return all funds or keep some for transaction fees.
@@ -404,8 +404,8 @@ async function returnFundsToMotherWallet(childWalletPrivateKeyBase58, motherWall
       amountToReturn
     );
     
-    // Send transaction using enhanced wrapper
-    console.log(`[WalletService] Sending return transaction with enhanced retry logic...`);
+    // Send transaction using IMMEDIATE confirmation strategy
+    console.log(`[WalletService] Sending return transaction with IMMEDIATE confirmation...`);
     const signature = await sendAndConfirmTransactionWrapper(
       connection,
       transaction,
@@ -419,7 +419,7 @@ async function returnFundsToMotherWallet(childWalletPrivateKeyBase58, motherWall
       }
     );
     
-    console.log(`[WalletService] ✅ Return funds confirmed successfully!`);
+    console.log(`[WalletService] ✅ Return funds SUCCESS!`);
     
     // Get updated balances
     const newChildBalance = await retry(async () => await connection.getBalance(childWallet.publicKey));
