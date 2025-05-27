@@ -42,3 +42,6 @@ Thumbs.db
 # Solana wallet files
 *.keypair
 *.wallet
+
+#T 
+scripts/ 

@@ -2,6 +2,12 @@ const fetch = require('node-fetch');
 const { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, Transaction, VersionedTransaction, SystemProgram } = require('@solana/web3.js');
 const bs58 = require('bs58');
 const { connection, retry, delay } = require('../utils/solanaUtils');
+const { 
+  sendAndConfirmTransactionWrapper, 
+  getDynamicPriorityFee,
+  lamportsToSol,
+  getRecentBlockhash
+} = require('../utils/transactionUtils');
 
 // Common token addresses
 const TOKENS = {
@@ -197,28 +203,45 @@ async function executeSwapService(
     console.log('Sending transaction...');
     const serializedTransaction = transaction.serialize ? transaction.serialize() : transaction.serialize();
     
+    // Get dynamic priority fee for better success rate
+    const dynamicPriorityFee = await getDynamicPriorityFee(connection, [userWallet.publicKey]);
+    console.log(`[JupiterService] Using dynamic priority fee: ${dynamicPriorityFee} microlamports`);
+    
     const signature = await retry(async () => {
       return await connection.sendRawTransaction(serializedTransaction, {
         skipPreflight: false,
         preflightCommitment: 'confirmed',
-        maxRetries: 5
+        maxRetries: 0 // Disable built-in retries, we handle our own
       });
     });
     
-    console.log(`Transaction sent: ${signature}`);
+    console.log(`[JupiterService] Transaction sent: ${signature}`);
+    console.log(`[JupiterService] Solscan: https://solscan.io/tx/${signature}?cluster=mainnet-beta`);
     
-    // Confirm the transaction
-    console.log('Waiting for confirmation...');
-    const confirmation = await retry(async () => {
-      return await connection.confirmTransaction(signature, 'finalized');
-    }, 5, 2000);
+    // Confirm the transaction with robust retry logic
+    console.log('[JupiterService] Waiting for confirmation...');
+    let confirmation;
+    let retries = 0;
+    const maxRetries = 5;
     
-    if (confirmation.value.err) {
-      console.error(`Swap failed: ${confirmation.value.err}`);
-      throw new Error(`Swap transaction failed: ${confirmation.value.err}`);
+    while (retries < maxRetries) {
+      try {
+        confirmation = await connection.confirmTransaction(signature, 'confirmed');
+        if (confirmation.value.err) {
+          throw new Error(`Swap transaction failed: ${JSON.stringify(confirmation.value.err)}`);
+        }
+        break;
+      } catch (error) {
+        retries++;
+        if (retries >= maxRetries) {
+          throw error;
+        }
+        console.warn(`[JupiterService] Confirmation attempt ${retries} failed: ${error.message}`);
+        await delay(1000 * Math.pow(2, retries)); // Exponential backoff
+      }
     }
     
-    console.log('Swap confirmed successfully!');
+    console.log('[JupiterService] ✅ Swap confirmed successfully!');
     
     // If fee collection is enabled, collect fees
     let feeResult = null;
@@ -250,11 +273,11 @@ async function executeSwapService(
         const userBalance = await connection.getBalance(userWallet.publicKey);
         
         if (userBalance < feeAmountLamports + 10000) { // Add buffer for transaction fee
-          console.warn(`User has insufficient balance for fee collection: ${userBalance / LAMPORTS_PER_SOL} SOL`);
+          console.warn(`[JupiterService] User has insufficient balance for fee collection: ${lamportsToSol(userBalance)} SOL`);
           feeResult = {
             status: 'skipped',
             message: 'Insufficient balance for fee collection',
-            feeAmount: feeAmountLamports / LAMPORTS_PER_SOL,
+            feeAmount: lamportsToSol(feeAmountLamports),
             feeTokenMint
           };
         } else {
@@ -265,57 +288,42 @@ async function executeSwapService(
             lamports: feeAmountLamports,
           });
           
-          // Create a new transaction for the fee
-          const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+          // Create a new transaction for the fee using robust utilities
+          const { blockhash, lastValidBlockHeight } = await getRecentBlockhash(connection, 'confirmed');
           const feeTransaction = new Transaction({
             feePayer: userWallet.publicKey,
             blockhash,
             lastValidBlockHeight
           }).add(feeTransferIx);
           
-          // Sign and send the fee transaction
-          feeTransaction.sign(userWallet);
+          // Get dynamic priority fee for fee transaction
+          const feeDynamicPriorityFee = await getDynamicPriorityFee(connection, [userWallet.publicKey]);
           
-          const feeSignature = await retry(async () => {
-            return await connection.sendTransaction(feeTransaction, [userWallet], {
+          // Send fee transaction using robust wrapper
+          console.log(`[JupiterService] Sending fee transaction with robust retry logic...`);
+          const feeSignature = await sendAndConfirmTransactionWrapper(
+            connection,
+            feeTransaction,
+            [userWallet],
+            {
               skipPreflight: false,
-              preflightCommitment: 'confirmed',
-              maxRetries: 3
-            });
-          });
+              maxRetries: 3,
+              commitment: 'confirmed',
+              priorityFeeMicrolamports: feeDynamicPriorityFee,
+              computeUnitLimit: 200000
+            }
+          );
           
-          console.log(`Fee transaction sent: ${feeSignature}`);
-          
-          // Confirm the fee transaction
-          const feeConfirmation = await retry(async () => {
-            return await connection.confirmTransaction({
-              signature: feeSignature,
-              blockhash,
-              lastValidBlockHeight
-            }, 'confirmed');
-          }, 5, 1000);
-          
-          if (feeConfirmation.value.err) {
-            console.error(`Fee collection failed: ${feeConfirmation.value.err}`);
-            feeResult = {
-              status: 'failed',
-              transactionId: feeSignature,
-              error: `Fee transaction failed: ${feeConfirmation.value.err}`,
-              feeAmount: feeAmountLamports / LAMPORTS_PER_SOL,
-              feeTokenMint
-            };
-          } else {
-            console.log('Fee collection confirmed successfully!');
-            feeResult = {
-              status: 'success',
-              transactionId: feeSignature,
-              feeAmount: feeAmountLamports / LAMPORTS_PER_SOL,
-              feeTokenMint
-            };
-          }
+          console.log(`[JupiterService] ✅ Fee collection confirmed successfully!`);
+          feeResult = {
+            status: 'success',
+            transactionId: feeSignature,
+            feeAmount: lamportsToSol(feeAmountLamports),
+            feeTokenMint
+          };
         }
       } catch (error) {
-        console.error('Error collecting fees:', error);
+        console.error('[JupiterService] Error collecting fees:', error);
         feeResult = {
           status: 'failed',
           error: `Fee collection error: ${error.message}`,
@@ -334,10 +342,10 @@ async function executeSwapService(
       transactionId: signature,
       feeCollection: feeResult,
       message: 'Swap executed successfully',
-      newBalanceSol: newBalance / LAMPORTS_PER_SOL
+      newBalanceSol: lamportsToSol(newBalance)
     };
   } catch (error) {
-    console.error('Error executing swap:', error);
+    console.error('[JupiterService] Error executing swap:', error);
     throw new Error(`Failed to execute swap: ${error.message}`);
   }
 }

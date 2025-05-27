@@ -3,6 +3,13 @@ const bs58 = require('bs58');
 const path = require('path');
 const fs = require('fs');
 const { connection, retry, delay } = require('../utils/solanaUtils');
+const { 
+  sendAndConfirmTransactionWrapper, 
+  createSolTransferTransaction, 
+  getDynamicPriorityFee,
+  solToLamports,
+  lamportsToSol
+} = require('../utils/transactionUtils');
 
 // Define the Solana mainnet RPC endpoint
 const MAINNET_URL = 'https://api.mainnet-beta.solana.com';
@@ -136,137 +143,109 @@ async function deriveChildWallets(motherWalletPublicKey, count = 3, saveToFile =
 }
 
 /**
- * Funds child wallets from a mother wallet.
+ * Funds multiple child wallets from a mother wallet using robust transaction handling.
  * @param {string} motherWalletPrivateKeyBase58 - The mother wallet's private key in base58 encoding.
- * @param {Array<{publicKey: string, amountSol: number}>} childWallets - Array of child wallet public keys and funding amounts.
- * @returns {Promise<{status: string, results: Array<{childPublicKey: string, transactionId: string|null, status: string, error: string|null}>}>}
- * @throws {Error} If there's an error with the mother wallet or insufficient funds.
+ * @param {Array<{publicKey: string, amountSol: number}>} childWallets - Array of child wallets to fund.
+ * @returns {Promise<{status: string, results: Array, motherWalletFinalBalanceSol: number}>}
+ * @throws {Error} If there's an error funding the wallets.
  */
 async function fundChildWallets(motherWalletPrivateKeyBase58, childWallets) {
   try {
-    console.log(`Funding ${childWallets.length} child wallets`);
+    console.log(`[WalletService] Starting funding process for ${childWallets.length} child wallets`);
     
     // Decode mother wallet private key
     const motherSecretKey = bs58.decode(motherWalletPrivateKeyBase58);
     const motherWallet = Keypair.fromSecretKey(motherSecretKey);
+    const motherPublicKey = motherWallet.publicKey.toBase58();
     
-    console.log(`Mother wallet public key: ${motherWallet.publicKey.toBase58()}`);
+    console.log(`[WalletService] Mother wallet public key: ${motherPublicKey}`);
     
     // Check mother wallet balance
     const motherBalance = await retry(async () => await connection.getBalance(motherWallet.publicKey));
     const motherBalanceInSol = motherBalance / LAMPORTS_PER_SOL;
-    console.log(`Mother wallet balance: ${motherBalanceInSol} SOL`);
+    console.log(`[WalletService] Mother wallet balance: ${motherBalanceInSol} SOL`);
     
-    // Calculate total funding amount and check if mother wallet has enough balance
-    const totalFundingAmount = childWallets.reduce((total, wallet) => total + wallet.amountSol, 0);
-    const estimatedFees = 0.00001 * childWallets.length; // Updated: Rough estimate of transaction fees (0.000005 regular + 0.000005 priority per tx)
-    const totalRequired = totalFundingAmount + estimatedFees;
+    // Calculate total amount needed
+    const totalAmountSol = childWallets.reduce((sum, wallet) => sum + wallet.amountSol, 0);
+    const totalAmountLamports = solToLamports(totalAmountSol);
     
-    if (motherBalanceInSol < totalRequired) {
-      throw new Error(`Insufficient funds in mother wallet. Need at least ${totalRequired} SOL, but only have ${motherBalanceInSol} SOL.`);
+    // Estimate total fees (rough estimate: 0.001 SOL per transaction)
+    const estimatedFeesLamports = childWallets.length * 1000000; // 0.001 SOL per tx
+    const totalNeededLamports = totalAmountLamports + estimatedFeesLamports;
+    
+    console.log(`[WalletService] Total amount to distribute: ${totalAmountSol} SOL`);
+    console.log(`[WalletService] Estimated fees: ${lamportsToSol(estimatedFeesLamports)} SOL`);
+    console.log(`[WalletService] Total needed: ${lamportsToSol(totalNeededLamports)} SOL`);
+    
+    if (motherBalance < totalNeededLamports) {
+      throw new Error(`Insufficient funds in mother wallet. Required: ${lamportsToSol(totalNeededLamports)} SOL, Available: ${motherBalanceInSol} SOL`);
     }
     
-    // Fund each child wallet
     const results = [];
+    
+    // Get dynamic priority fee for better transaction success
+    const dynamicPriorityFee = await getDynamicPriorityFee(connection, [motherWallet.publicKey]);
+    console.log(`[WalletService] Using dynamic priority fee: ${dynamicPriorityFee} microlamports`);
     
     for (let i = 0; i < childWallets.length; i++) {
       const { publicKey, amountSol } = childWallets[i];
-      console.log(`Funding wallet ${i + 1}/${childWallets.length}: ${publicKey} with ${amountSol} SOL`);
+      console.log(`[WalletService] Funding wallet ${i + 1}/${childWallets.length}: ${publicKey} with ${amountSol} SOL`);
       
       try {
         // Convert SOL to lamports
-        const amountLamports = Math.floor(amountSol * LAMPORTS_PER_SOL);
+        const amountLamports = solToLamports(amountSol);
         
         // Create and validate child wallet public key
         const childPublicKey = new PublicKey(publicKey);
         
         // Get current balance
         const currentBalance = await retry(async () => await connection.getBalance(childPublicKey));
-        console.log(`Current balance: ${currentBalance / LAMPORTS_PER_SOL} SOL`);
+        console.log(`[WalletService] Current balance: ${lamportsToSol(currentBalance)} SOL`);
         
-        // Create a transfer instruction
-        const instruction = SystemProgram.transfer({
-          fromPubkey: motherWallet.publicKey,
-          toPubkey: childPublicKey,
-          lamports: amountLamports,
-        });
-        
-        // Get recent blockhash with retry logic
-        console.log('Getting recent blockhash...');
-        const { blockhash, lastValidBlockHeight } = await retry(async () => {
-          return await connection.getLatestBlockhash('confirmed');
-        });
-        
-        // Create transaction
-        const transaction = new Transaction({
-          feePayer: motherWallet.publicKey,
-          blockhash,
-          lastValidBlockHeight
-        }).add(instruction);
-        
-        // Add priority fee instruction
-        transaction.add(
-          ComputeBudgetProgram.setComputeUnitPrice({
-            microLamports: 5 // 0.000005 SOL priority fee
-          })
+        // Create transfer transaction using robust utilities
+        const transaction = createSolTransferTransaction(
+          motherWallet.publicKey,
+          childPublicKey,
+          amountLamports
         );
         
-        // Sign transaction
-        transaction.sign(motherWallet);
-        
-        // Add delay between transactions to avoid rate limiting
+        // Add delay between transactions to avoid overwhelming the network
         if (i > 0) {
-          console.log('Adding delay before sending transaction...');
-          await delay(2000);
+          console.log(`[WalletService] Adding delay before sending transaction...`);
+          await delay(1000); // Reduced delay since we have better retry logic
         }
         
-        // Send transaction with retry
-        console.log('Sending transaction...');
-        const signature = await retry(async () => {
-          return await connection.sendTransaction(transaction, [motherWallet], {
-            skipPreflight: false,
-            preflightCommitment: 'confirmed',
-            maxRetries: 5
-          });
+        // Send transaction using robust wrapper
+        console.log(`[WalletService] Sending transaction with robust retry logic...`);
+        const signature = await sendAndConfirmTransactionWrapper(
+          connection,
+          transaction,
+          [motherWallet],
+          {
+            skipPreflight: false, // Enable preflight for better error detection
+            maxRetries: 5,
+            commitment: 'confirmed',
+            priorityFeeMicrolamports: dynamicPriorityFee,
+            computeUnitLimit: 200000
+          }
+        );
+        
+        console.log(`[WalletService] ✅ Funding confirmed successfully!`);
+        
+        // Get updated balance
+        const newBalance = await retry(async () => await connection.getBalance(childPublicKey));
+        console.log(`[WalletService] New balance: ${lamportsToSol(newBalance)} SOL`);
+        
+        results.push({
+          childPublicKey: publicKey,
+          transactionId: signature,
+          status: 'funded',
+          error: null,
+          newBalanceSol: lamportsToSol(newBalance)
         });
         
-        console.log(`Funding transaction sent: ${signature}`);
-        
-        // Wait for confirmation with retry
-        console.log('Waiting for confirmation...');
-        const confirmation = await retry(async () => {
-          return await connection.confirmTransaction({
-            signature,
-            blockhash,
-            lastValidBlockHeight
-          }, 'finalized');
-        }, 5, 2000);
-        
-        if (confirmation.value.err) {
-          console.error(`Funding failed: ${confirmation.value.err}`);
-          results.push({
-            childPublicKey: publicKey,
-            transactionId: signature,
-            status: 'failed',
-            error: `Confirmation error: ${confirmation.value.err}`
-          });
-        } else {
-          console.log('Funding confirmed successfully!');
-          
-          // Get updated balance
-          const newBalance = await retry(async () => await connection.getBalance(childPublicKey));
-          console.log(`New balance: ${newBalance / LAMPORTS_PER_SOL} SOL`);
-          
-          results.push({
-            childPublicKey: publicKey,
-            transactionId: signature,
-            status: 'funded',
-            error: null,
-            newBalanceSol: newBalance / LAMPORTS_PER_SOL
-          });
-        }
       } catch (error) {
-        console.error(`Error funding wallet ${publicKey}:`, error);
+        console.error(`[WalletService] ❌ Error funding wallet ${publicKey}:`, error);
         results.push({
           childPublicKey: publicKey,
           transactionId: null,
@@ -283,21 +262,21 @@ async function fundChildWallets(motherWalletPrivateKeyBase58, childWallets) {
     
     // Get final mother wallet balance
     const finalBalance = await retry(async () => await connection.getBalance(motherWallet.publicKey));
-    console.log(`Final mother wallet balance: ${finalBalance / LAMPORTS_PER_SOL} SOL`);
+    console.log(`[WalletService] Final mother wallet balance: ${lamportsToSol(finalBalance)} SOL`);
     
     return {
       status: overallStatus,
       results: results,
-      motherWalletFinalBalanceSol: finalBalance / LAMPORTS_PER_SOL
+      motherWalletFinalBalanceSol: lamportsToSol(finalBalance)
     };
   } catch (error) {
-    console.error('Error funding child wallets:', error);
+    console.error('[WalletService] Error funding child wallets:', error);
     throw new Error(`Failed to fund child wallets: ${error.message}`);
   }
 }
 
 /**
- * Returns funds from a child wallet to a mother wallet.
+ * Returns funds from a child wallet to a mother wallet using robust transaction handling.
  * @param {string} childWalletPrivateKeyBase58 - The child wallet's private key in base58 encoding.
  * @param {string} motherWalletPublicKey - The mother wallet's public key in base58 encoding.
  * @param {boolean} returnAllFunds - Whether to return all funds or keep some for transaction fees.
@@ -306,30 +285,35 @@ async function fundChildWallets(motherWalletPrivateKeyBase58, childWallets) {
  */
 async function returnFundsToMotherWallet(childWalletPrivateKeyBase58, motherWalletPublicKey, returnAllFunds = false) {
   try {
-    console.log(`Returning funds to mother wallet: ${motherWalletPublicKey}`);
+    console.log(`[WalletService] Returning funds to mother wallet: ${motherWalletPublicKey}`);
     
     // Decode child wallet private key
     const childSecretKey = bs58.decode(childWalletPrivateKeyBase58);
     const childWallet = Keypair.fromSecretKey(childSecretKey);
     const childPublicKey = childWallet.publicKey.toBase58();
     
-    console.log(`Child wallet public key: ${childPublicKey}`);
+    console.log(`[WalletService] Child wallet public key: ${childPublicKey}`);
     
     // Validate mother wallet public key
     const motherPublicKey = new PublicKey(motherWalletPublicKey);
     
     // Check child wallet balance
     const childBalance = await retry(async () => await connection.getBalance(childWallet.publicKey));
-    const childBalanceInSol = childBalance / LAMPORTS_PER_SOL;
-    console.log(`Child wallet balance: ${childBalanceInSol} SOL`);
+    const childBalanceInSol = lamportsToSol(childBalance);
+    console.log(`[WalletService] Child wallet balance: ${childBalanceInSol} SOL`);
     
-    // Check if the wallet has enough funds to return
-    const regularTransactionFee = 5000; // 0.000005 SOL for regular transaction fee
-    const priorityTransactionFee = 5000; // 0.000005 SOL for priority fee
-    const totalTransactionFee = regularTransactionFee + priorityTransactionFee; // 0.00001 SOL total
+    // Get dynamic priority fee
+    const dynamicPriorityFee = await getDynamicPriorityFee(connection, [childWallet.publicKey, motherPublicKey]);
+    
+    // Calculate transaction fees more accurately
+    const baseTransactionFee = 5000; // Base transaction fee
+    const priorityFeeEstimate = Math.ceil(dynamicPriorityFee * 200000 / 1000000); // Convert microlamports to lamports for 200k CU
+    const totalTransactionFee = baseTransactionFee + priorityFeeEstimate;
+    
+    console.log(`[WalletService] Estimated total transaction fee: ${lamportsToSol(totalTransactionFee)} SOL`);
     
     if (childBalance <= totalTransactionFee) {
-      throw new Error(`Insufficient funds in child wallet. Balance (${childBalanceInSol} SOL) is too low to cover transaction fees (0.00001 SOL).`);
+      throw new Error(`Insufficient funds in child wallet. Balance (${childBalanceInSol} SOL) is too low to cover transaction fees (${lamportsToSol(totalTransactionFee)} SOL).`);
     }
     
     // Calculate amount to return, leaving some for transaction fees if returnAllFunds is false
@@ -348,83 +332,48 @@ async function returnFundsToMotherWallet(childWalletPrivateKeyBase58, motherWall
       }
     }
     
-    console.log(`Returning ${amountToReturn / LAMPORTS_PER_SOL} SOL to mother wallet`);
+    console.log(`[WalletService] Returning ${lamportsToSol(amountToReturn)} SOL to mother wallet`);
     
-    // Create a transfer instruction
-    const instruction = SystemProgram.transfer({
-      fromPubkey: childWallet.publicKey,
-      toPubkey: motherPublicKey,
-      lamports: amountToReturn,
-    });
-    
-    // Get recent blockhash with retry logic
-    console.log('Getting recent blockhash...');
-    const { blockhash, lastValidBlockHeight } = await retry(async () => {
-      return await connection.getLatestBlockhash('confirmed');
-    });
-    
-    // Create transaction
-    const transaction = new Transaction({
-      feePayer: childWallet.publicKey,
-      blockhash,
-      lastValidBlockHeight
-    }).add(instruction);
-    
-    // Add priority fee instruction
-    transaction.add(
-      ComputeBudgetProgram.setComputeUnitPrice({
-        microLamports: 5 // 0.000005 SOL priority fee
-      })
+    // Create transfer transaction using robust utilities
+    const transaction = createSolTransferTransaction(
+      childWallet.publicKey,
+      motherPublicKey,
+      amountToReturn
     );
     
-    // Sign transaction
-    transaction.sign(childWallet);
-    
-    // Send transaction with retry
-    console.log('Sending transaction...');
-    const signature = await retry(async () => {
-      return await connection.sendTransaction(transaction, [childWallet], {
+    // Send transaction using robust wrapper
+    console.log(`[WalletService] Sending return transaction with robust retry logic...`);
+    const signature = await sendAndConfirmTransactionWrapper(
+      connection,
+      transaction,
+      [childWallet],
+      {
         skipPreflight: false,
-        preflightCommitment: 'confirmed',
-        maxRetries: 5
-      });
-    });
+        maxRetries: 5,
+        commitment: 'confirmed',
+        priorityFeeMicrolamports: dynamicPriorityFee,
+        computeUnitLimit: 200000
+      }
+    );
     
-    console.log(`Return funds transaction sent: ${signature}`);
-    
-    // Wait for confirmation with retry
-    console.log('Waiting for confirmation...');
-    const confirmation = await retry(async () => {
-      return await connection.confirmTransaction({
-        signature,
-        blockhash,
-        lastValidBlockHeight
-      }, 'finalized');
-    }, 5, 2000);
-    
-    if (confirmation.value.err) {
-      console.error(`Return funds failed: ${confirmation.value.err}`);
-      throw new Error(`Transaction failed: ${confirmation.value.err}`);
-    }
-    
-    console.log('Return funds confirmed successfully!');
+    console.log(`[WalletService] ✅ Return funds confirmed successfully!`);
     
     // Get updated balances
     const newChildBalance = await retry(async () => await connection.getBalance(childWallet.publicKey));
     const newMotherBalance = await retry(async () => await connection.getBalance(motherPublicKey));
     
-    console.log(`New child wallet balance: ${newChildBalance / LAMPORTS_PER_SOL} SOL`);
-    console.log(`New mother wallet balance: ${newMotherBalance / LAMPORTS_PER_SOL} SOL`);
+    console.log(`[WalletService] New child wallet balance: ${lamportsToSol(newChildBalance)} SOL`);
+    console.log(`[WalletService] New mother wallet balance: ${lamportsToSol(newMotherBalance)} SOL`);
     
     return {
       status: 'success',
       transactionId: signature,
-      amountReturnedSol: amountToReturn / LAMPORTS_PER_SOL,
-      newChildBalanceSol: newChildBalance / LAMPORTS_PER_SOL,
+      amountReturnedSol: lamportsToSol(amountToReturn),
+      newChildBalanceSol: lamportsToSol(newChildBalance),
       message: 'Funds returned to mother wallet successfully'
     };
   } catch (error) {
-    console.error('Error returning funds to mother wallet:', error);
+    console.error('[WalletService] Error returning funds to mother wallet:', error);
     throw new Error(`Failed to return funds: ${error.message}`);
   }
 }
