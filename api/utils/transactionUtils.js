@@ -597,7 +597,6 @@ module.exports = {
     getDynamicPriorityFee,
     getRecentBlockhash,
     calculateTransactionFee,
-    confirmTransactionProperly,
     confirmTransactionAdvanced,
     checkTransactionStatus,
     sleep,
