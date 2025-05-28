@@ -2,34 +2,88 @@ const web3 = require('@solana/web3.js');
 const { connection, delay } = require('./solanaUtils');
 
 /**
- * RPC rate limiting protection
+ * RPC Provider Configuration for optimal settings
+ * These settings are optimized for each provider type
+ */
+const RPC_CONFIGS = {
+    // Public mainnet-beta (free tier) - strict rate limiting required
+    PUBLIC: {
+        name: 'Public Mainnet-Beta',
+        rpcCallInterval: 300, // 300ms between calls (conservative for 100 req/10s limit)
+        maxConcurrentRequests: 3, // Limit concurrent requests
+        retryBackoff: 2000, // 2s backoff for 429 errors
+        confirmationTimeout: 45000, // 45s confirmation timeout
+        useWebSocket: true, // Always use WebSocket to avoid polling
+        description: 'Free public RPC with strict rate limits'
+    },
+    
+    // Premium providers (QuickNode, Helius, Alchemy) - relaxed settings
+    PREMIUM: {
+        name: 'Premium RPC Provider',
+        rpcCallInterval: 100, // 100ms between calls (higher limits)
+        maxConcurrentRequests: 10, // More concurrent requests allowed
+        retryBackoff: 1000, // 1s backoff
+        confirmationTimeout: 30000, // 30s confirmation timeout
+        useWebSocket: true, // WebSocket preferred but polling fallback available
+        description: 'Premium RPC with higher rate limits and better performance'
+    }
+};
+
+// Detect RPC type based on URL
+function getRpcConfig() {
+    const rpcUrl = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
+    
+    if (rpcUrl.includes('api.mainnet-beta.solana.com')) {
+        console.log(`[TransactionUtils] Using PUBLIC RPC configuration for: ${rpcUrl}`);
+        return RPC_CONFIGS.PUBLIC;
+    } else {
+        console.log(`[TransactionUtils] Using PREMIUM RPC configuration for: ${rpcUrl}`);
+        return RPC_CONFIGS.PREMIUM;
+    }
+}
+
+const currentRpcConfig = getRpcConfig();
+
+/**
+ * Enhanced RPC rate limiting protection based on provider type
  */
 let lastRpcCall = 0;
-const RPC_CALL_INTERVAL = 200; // 200ms between RPC calls to avoid 429 errors
+let concurrentRequests = 0;
 
 async function rateLimitedRpcCall(rpcFunction, retries = 3) {
-    for (let i = 0; i < retries; i++) {
-        try {
-            // Ensure minimum interval between RPC calls
-            const now = Date.now();
-            const timeSinceLastCall = now - lastRpcCall;
-            if (timeSinceLastCall < RPC_CALL_INTERVAL) {
-                await sleep(RPC_CALL_INTERVAL - timeSinceLastCall);
-            }
-            lastRpcCall = Date.now();
-            
-            return await rpcFunction();
-        } catch (error) {
-            if (error.message.includes('429') || error.message.includes('Too Many Requests')) {
-                const backoffTime = Math.min(1000 * Math.pow(2, i), 8000); // Max 8 second backoff
-                console.warn(`[TransactionUtils] RPC rate limited, waiting ${backoffTime}ms (attempt ${i + 1}/${retries})`);
-                await sleep(backoffTime);
-                continue;
-            }
-            throw error;
-        }
+    // Wait for concurrent request slot
+    while (concurrentRequests >= currentRpcConfig.maxConcurrentRequests) {
+        await sleep(50); // Short wait for slot to open
     }
-    throw new Error('RPC call failed after rate limiting retries');
+    
+    concurrentRequests++;
+    
+    try {
+        for (let i = 0; i < retries; i++) {
+            try {
+                // Ensure minimum interval between RPC calls
+                const now = Date.now();
+                const timeSinceLastCall = now - lastRpcCall;
+                if (timeSinceLastCall < currentRpcConfig.rpcCallInterval) {
+                    await sleep(currentRpcConfig.rpcCallInterval - timeSinceLastCall);
+                }
+                lastRpcCall = Date.now();
+                
+                return await rpcFunction();
+            } catch (error) {
+                if (error.message.includes('429') || error.message.includes('Too Many Requests')) {
+                    const backoffTime = Math.min(currentRpcConfig.retryBackoff * Math.pow(2, i), 16000);
+                    console.warn(`[TransactionUtils] RPC rate limited, waiting ${backoffTime}ms (attempt ${i + 1}/${retries})`);
+                    await sleep(backoffTime);
+                    continue;
+                }
+                throw error;
+            }
+        }
+        throw new Error('RPC call failed after rate limiting retries');
+    } finally {
+        concurrentRequests--;
+    }
 }
 
 /**
@@ -85,8 +139,8 @@ function addPriorityFeeInstructions(transaction, priorityFeeMicrolamports = 1000
 }
 
 /**
- * SIMPLIFIED confirmation strategy that works with the proper confirmTransaction API
- * Based on official Solana documentation and working implementations
+ * ADVANCED WebSocket-based confirmation with polling fallback
+ * This is the OPTIMAL strategy based on research to avoid rate limits
  * @param {web3.Connection} connection - Solana connection object
  * @param {string} signature - Transaction signature
  * @param {string} blockhash - Recent blockhash used in transaction
@@ -94,28 +148,174 @@ function addPriorityFeeInstructions(transaction, priorityFeeMicrolamports = 1000
  * @param {web3.Commitment} commitment - Commitment level
  * @returns {Promise<object>} Confirmation result
  */
-async function confirmTransactionProperly(connection, signature, blockhash, lastValidBlockHeight, commitment = 'confirmed') {
-    console.log(`[TransactionUtils] Starting PROPER confirmation strategy for signature: ${signature.slice(0, 8)}...`);
+async function confirmTransactionAdvanced(connection, signature, blockhash, lastValidBlockHeight, commitment = 'confirmed') {
+    console.log(`[TransactionUtils] Starting ADVANCED WebSocket confirmation for: ${signature.slice(0, 8)}...`);
+    
+    if (currentRpcConfig.useWebSocket) {
+        try {
+            // PRIMARY: WebSocket-based confirmation (most efficient)
+            return await confirmWithWebSocket(connection, signature, blockhash, lastValidBlockHeight, commitment);
+        } catch (error) {
+            console.warn(`[TransactionUtils] WebSocket confirmation failed: ${error.message}`);
+            console.log(`[TransactionUtils] Falling back to polling confirmation...`);
+            
+            // FALLBACK: Use polling with rate limiting
+            return await confirmWithPolling(connection, signature, blockhash, lastValidBlockHeight, commitment);
+        }
+    } else {
+        // For providers that prefer polling
+        return await confirmWithPolling(connection, signature, blockhash, lastValidBlockHeight, commitment);
+    }
+}
+
+/**
+ * WebSocket-based confirmation (optimal for rate limiting)
+ */
+async function confirmWithWebSocket(connection, signature, blockhash, lastValidBlockHeight, commitment) {
+    console.log(`[TransactionUtils] Using WebSocket confirmation strategy`);
+    
+    return new Promise((resolve, reject) => {
+        let subscriptionId = null;
+        let timeoutId = null;
+        let resolved = false;
+        
+        const cleanup = () => {
+            if (subscriptionId) {
+                try {
+                    connection.removeSignatureListener(subscriptionId);
+                } catch (e) {
+                    // Ignore cleanup errors
+                }
+                subscriptionId = null;
+            }
+            if (timeoutId) {
+                clearTimeout(timeoutId);
+                timeoutId = null;
+            }
+        };
+        
+        const handleResult = (result, isTimeout = false) => {
+            if (resolved) return;
+            resolved = true;
+            cleanup();
+            
+            if (isTimeout) {
+                reject(new Error(`WebSocket confirmation timed out after ${currentRpcConfig.confirmationTimeout}ms`));
+            } else if (result.err) {
+                reject(new Error(`Transaction failed: ${JSON.stringify(result.err)}`));
+            } else {
+                console.log(`[TransactionUtils] ✅ WebSocket confirmation successful!`);
+                resolve({ value: result });
+            }
+        };
+        
+        try {
+            // Set up WebSocket listener
+            subscriptionId = connection.onSignatureWithOptions(
+                signature,
+                (notificationResult, context) => {
+                    console.log(`[TransactionUtils] WebSocket notification received in slot: ${context.slot}`);
+                    handleResult(notificationResult);
+                },
+                { commitment: commitment }
+            );
+            
+            // Set timeout with fallback check
+            timeoutId = setTimeout(async () => {
+                if (resolved) return;
+                
+                console.log(`[TransactionUtils] WebSocket timeout reached, doing final status check...`);
+                
+                try {
+                    // Final check before timeout
+                    const statusResult = await rateLimitedRpcCall(async () => {
+                        return await connection.getSignatureStatus(signature);
+                    });
+                    
+                    if (statusResult && statusResult.value) {
+                        const status = statusResult.value;
+                        const isConfirmed = status.confirmationStatus === commitment || 
+                                           (commitment === 'confirmed' && status.confirmationStatus === 'finalized');
+                        
+                        if (isConfirmed && !status.err) {
+                            console.log(`[TransactionUtils] ✅ Confirmed by fallback status check!`);
+                            handleResult(status);
+                            return;
+                        }
+                    }
+                    
+                    handleResult(null, true); // Timeout
+                } catch (error) {
+                    console.warn(`[TransactionUtils] Final status check failed: ${error.message}`);
+                    handleResult(null, true); // Timeout
+                }
+            }, currentRpcConfig.confirmationTimeout);
+            
+        } catch (error) {
+            cleanup();
+            reject(error);
+        }
+    });
+}
+
+/**
+ * Polling-based confirmation with smart rate limiting
+ */
+async function confirmWithPolling(connection, signature, blockhash, lastValidBlockHeight, commitment) {
+    console.log(`[TransactionUtils] Using polling confirmation strategy`);
     
     try {
-        // Use the official confirmTransaction method with the proper signature
-        // This is the CORRECT way according to Solana documentation
-        const confirmation = await connection.confirmTransaction({
-            signature: signature,
-            blockhash: blockhash,
-            lastValidBlockHeight: lastValidBlockHeight
-        }, commitment);
+        // Use the official confirmTransaction method with rate limiting
+        const confirmation = await rateLimitedRpcCall(async () => {
+            return await connection.confirmTransaction({
+                signature: signature,
+                blockhash: blockhash,
+                lastValidBlockHeight: lastValidBlockHeight
+            }, commitment);
+        });
         
         if (confirmation.value.err) {
             throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`);
         }
         
-        console.log(`[TransactionUtils] ✅ Transaction confirmed successfully!`);
+        console.log(`[TransactionUtils] ✅ Polling confirmation successful!`);
         return confirmation;
         
     } catch (error) {
-        console.error(`[TransactionUtils] ❌ Confirmation failed: ${error.message}`);
+        console.error(`[TransactionUtils] ❌ Polling confirmation failed: ${error.message}`);
         throw error;
+    }
+}
+
+/**
+ * Smart confirmation fallback to prevent duplicate transactions
+ * This checks if a transaction already succeeded before retrying
+ */
+async function checkTransactionStatus(connection, signature) {
+    try {
+        console.log(`[TransactionUtils] Checking existing transaction status for: ${signature.slice(0, 8)}...`);
+        
+        const status = await rateLimitedRpcCall(async () => {
+            return await connection.getSignatureStatus(signature);
+        });
+        
+        if (status && status.value) {
+            const result = status.value;
+            if (result.confirmationStatus === 'confirmed' || result.confirmationStatus === 'finalized') {
+                if (!result.err) {
+                    console.log(`[TransactionUtils] ✅ Transaction already confirmed! Status: ${result.confirmationStatus}`);
+                    return { confirmed: true, signature };
+                } else {
+                    console.log(`[TransactionUtils] ❌ Transaction failed with error: ${JSON.stringify(result.err)}`);
+                    return { confirmed: false, error: result.err };
+                }
+            }
+        }
+        
+        return { confirmed: false };
+    } catch (error) {
+        console.warn(`[TransactionUtils] Could not check transaction status: ${error.message}`);
+        return { confirmed: false };
     }
 }
 
@@ -135,8 +335,9 @@ function calculateTransactionFee(priorityFeeMicrolamports = 100000, computeUnitL
 }
 
 /**
- * Enhanced transaction sender with PROPER confirmation to avoid block height exceeded
- * Uses the correct confirmTransaction pattern with proper blockhash handling
+ * Enhanced transaction sender with ADVANCED confirmation and smart fallback
+ * Uses WebSocket-based confirmation with polling fallback to avoid rate limits
+ * Includes duplicate transaction prevention based on research findings
  * @param {web3.Connection} connection - Solana connection object.
  * @param {web3.Transaction} transaction - The transaction to send.
  * @param {web3.Signer[]} signers - Array of signers for the transaction.
@@ -157,21 +358,38 @@ async function sendAndConfirmTransactionWrapper(connection, transaction, signers
         computeUnitLimit = 200000
     } = options;
 
-    console.log(`[TransactionUtils] Starting PROPER transaction strategy with ${maxRetries} max retries`);
+    console.log(`[TransactionUtils] Starting ADVANCED transaction strategy with ${maxRetries} max retries`);
+    console.log(`[TransactionUtils] RPC Config: ${currentRpcConfig.name} - ${currentRpcConfig.description}`);
     console.log(`[TransactionUtils] Configuration: skipPreflight=${skipPreflight}, commitment=${commitment}`);
 
     // Add priority fee instructions
     addPriorityFeeInstructions(transaction, priorityFeeMicrolamports, computeUnitLimit);
 
     let retries = 0;
-    let signature = null;
+    let lastSignature = null;
 
     while (retries < maxRetries) {
         try {
             console.log(`[TransactionUtils] Attempt ${retries + 1}/${maxRetries}: Preparing transaction...`);
             
-            // Get FRESH blockhash for each attempt - CRITICAL
-            const latestBlockhash = await connection.getLatestBlockhash(commitment);
+            // CRITICAL: Check if last transaction succeeded before retrying
+            if (lastSignature) {
+                console.log(`[TransactionUtils] Checking if previous transaction already succeeded...`);
+                const statusCheck = await checkTransactionStatus(connection, lastSignature);
+                
+                if (statusCheck.confirmed) {
+                    console.log(`[TransactionUtils] ✅ Previous transaction already confirmed! Returning: ${lastSignature}`);
+                    return lastSignature;
+                } else if (statusCheck.error) {
+                    console.log(`[TransactionUtils] Previous transaction failed definitively, proceeding with new attempt`);
+                }
+            }
+            
+            // Get FRESH blockhash for each attempt - CRITICAL for avoiding expiry
+            const latestBlockhash = await rateLimitedRpcCall(async () => {
+                return await connection.getLatestBlockhash(commitment);
+            });
+            
             transaction.recentBlockhash = latestBlockhash.blockhash;
             transaction.feePayer = signers[0].publicKey;
 
@@ -184,57 +402,72 @@ async function sendAndConfirmTransactionWrapper(connection, transaction, signers
             const rawTransaction = transaction.serialize();
             console.log(`[TransactionUtils] Sending transaction (${rawTransaction.length} bytes)...`);
             
-            // Send with minimal settings for speed
-            signature = await connection.sendRawTransaction(rawTransaction, {
-                skipPreflight: skipPreflight,
-                preflightCommitment: commitment,
-                maxRetries: 0 // Disable built-in retries for speed
+            // Send with optimized settings for current RPC type
+            lastSignature = await rateLimitedRpcCall(async () => {
+                return await connection.sendRawTransaction(rawTransaction, {
+                    skipPreflight: skipPreflight,
+                    preflightCommitment: commitment,
+                    maxRetries: 0 // Disable built-in retries for manual control
+                });
             });
 
-            console.log(`[TransactionUtils] Transaction sent: ${signature}`);
-            console.log(`[TransactionUtils] Solscan: https://solscan.io/tx/${signature}?cluster=mainnet-beta`);
+            console.log(`[TransactionUtils] Transaction sent: ${lastSignature}`);
+            console.log(`[TransactionUtils] Solscan: https://solscan.io/tx/${lastSignature}?cluster=mainnet-beta`);
 
-            // PROPER confirmation using the official confirmTransaction API
-            await confirmTransactionProperly(
+            // ADVANCED confirmation using WebSocket with polling fallback
+            await confirmTransactionAdvanced(
                 connection, 
-                signature, 
+                lastSignature, 
                 latestBlockhash.blockhash, 
                 latestBlockhash.lastValidBlockHeight, 
                 commitment
             );
 
-            console.log(`[TransactionUtils] ✅ Transaction SUCCESS: ${signature}`);
-            return signature;
+            console.log(`[TransactionUtils] ✅ Transaction SUCCESS: ${lastSignature}`);
+            return lastSignature;
 
         } catch (error) {
             console.warn(`[TransactionUtils] ❌ Attempt ${retries + 1} failed: ${error.message}`);
             retries++;
-            signature = null;
             
-            // Handle specific error types
-            if (error.message.includes('insufficient funds')) {
-                console.error(`[TransactionUtils] 💰 Insufficient funds - stopping retries`);
+            // Handle specific error types with appropriate responses
+            if (error.message.includes('insufficient funds') || error.message.includes('Insufficient funds')) {
+                console.error(`[TransactionUtils] 💰 Insufficient funds - stopping all retries`);
                 throw error;
             }
             
-            if (error.message.includes('block height exceeded')) {
-                console.error(`[TransactionUtils] ⏰ Block height exceeded - will retry with fresh blockhash`);
-                // Don't throw immediately - retry with fresh blockhash
+            // For confirmation timeouts, check if transaction actually succeeded
+            if (error.message.includes('timed out') || error.message.includes('block height exceeded')) {
+                console.warn(`[TransactionUtils] ⏰ Confirmation issue - will check transaction status`);
+                
+                if (lastSignature) {
+                    console.log(`[TransactionUtils] Doing final check for signature: ${lastSignature.slice(0, 8)}...`);
+                    // Give network a moment to propagate
+                    await sleep(2000);
+                    
+                    const finalCheck = await checkTransactionStatus(connection, lastSignature);
+                    if (finalCheck.confirmed) {
+                        console.log(`[TransactionUtils] ✅ Transaction actually succeeded! Returning: ${lastSignature}`);
+                        return lastSignature;
+                    }
+                }
             }
             
             if (retries >= maxRetries) {
-                console.error(`[TransactionUtils] 🚫 All retries exhausted`);
+                console.error(`[TransactionUtils] 🚫 All retries exhausted after ${maxRetries} attempts`);
                 throw new Error(`Transaction failed after ${maxRetries} attempts: ${error.message}`);
             }
 
-            // Quick retry for block height issues, longer for others
+            // Smart backoff based on error type and RPC configuration
             let backoffTime;
-            if (error.message.includes('block height exceeded')) {
-                backoffTime = 500; // Very quick retry with fresh blockhash
+            if (error.message.includes('block height exceeded') || error.message.includes('timed out')) {
+                backoffTime = 500; // Quick retry with fresh blockhash for timing issues
             } else if (error.message.includes('429') || error.message.includes('Too Many Requests')) {
-                backoffTime = 2000; // Moderate delay for rate limiting
+                backoffTime = currentRpcConfig.retryBackoff; // Use RPC-specific backoff
+            } else if (error.message.includes('blockhash not found')) {
+                backoffTime = 1000; // Medium delay for blockhash propagation
             } else {
-                backoffTime = 1000; // Standard delay for other errors
+                backoffTime = 1500; // Standard delay for other errors
             }
             
             console.log(`[TransactionUtils] ⏳ Retrying in ${backoffTime}ms...`);
@@ -242,7 +475,7 @@ async function sendAndConfirmTransactionWrapper(connection, transaction, signers
         }
     }
     
-    throw new Error('Transaction failed after all retries');
+    throw new Error('Transaction failed after all retries - this should not be reached');
 }
 
 /**
@@ -365,5 +598,9 @@ module.exports = {
     getRecentBlockhash,
     calculateTransactionFee,
     confirmTransactionProperly,
-    sleep
+    confirmTransactionAdvanced,
+    checkTransactionStatus,
+    sleep,
+    getRpcConfig: () => currentRpcConfig,
+    RPC_CONFIGS
 }; 
