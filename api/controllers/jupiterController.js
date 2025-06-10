@@ -1,6 +1,88 @@
 const jupiterService = require('../services/jupiterService');
 
 /**
+ * Enhanced error classifier for Jupiter API responses
+ * @param {Error} error - The error object from Jupiter service
+ * @returns {Object} Classified error with proper status code and error type
+ */
+function classifyJupiterError(error) {
+  const errorMessage = error.message || '';
+  
+  // Jupiter API 400 errors - legitimate responses for business logic issues
+  if (errorMessage.includes('Could not find any route')) {
+    return {
+      status: 400,
+      errorCode: 'NO_ROUTE_FOUND',
+      message: 'No trading route found for this token pair. This may be due to low liquidity or an unsupported token.',
+      userMessage: 'Unable to find a swap route for these tokens. Please check token addresses or try a different pair.',
+      category: 'BUSINESS_LOGIC'
+    };
+  }
+  
+  if (errorMessage.includes('Invalid input mint') || errorMessage.includes('Invalid output mint')) {
+    return {
+      status: 400,
+      errorCode: 'INVALID_TOKEN_ADDRESS',
+      message: 'Invalid token mint address provided.',
+      userMessage: 'One or both token addresses are invalid. Please verify the token addresses.',
+      category: 'VALIDATION'
+    };
+  }
+  
+  // Jupiter API 422 errors - serialization/format issues
+  if (errorMessage.includes('Failed to deserialize') || errorMessage.includes('Parse error: WrongSize')) {
+    return {
+      status: 422,
+      errorCode: 'SERIALIZATION_ERROR',
+      message: 'Quote response format incompatible with swap endpoint.',
+      userMessage: 'There was an issue processing the swap quote. Please request a new quote and try again.',
+      category: 'SERIALIZATION'
+    };
+  }
+  
+  // Network/Infrastructure errors (502)
+  if (errorMessage.includes('HTTP error! Status: 5') || errorMessage.includes('ECONNREFUSED') || errorMessage.includes('timeout')) {
+    return {
+      status: 502,
+      errorCode: 'JUPITER_API_UNAVAILABLE',
+      message: 'Jupiter API is temporarily unavailable.',
+      userMessage: 'The trading service is temporarily unavailable. Please try again in a moment.',
+      category: 'INFRASTRUCTURE'
+    };
+  }
+  
+  // Transaction execution errors (simulation failures, etc.)
+  if (errorMessage.includes('custom program error: 0x26') || errorMessage.includes('InvalidSplTokenProgram')) {
+    return {
+      status: 400,
+      errorCode: 'TOKEN_PROGRAM_INCOMPATIBLE',
+      message: 'Token program incompatibility detected (likely Token-2022 issue).',
+      userMessage: 'This token is not compatible with the current swap method. Please try a different token or contact support.',
+      category: 'TOKEN_COMPATIBILITY'
+    };
+  }
+  
+  if (errorMessage.includes('Transaction simulation failed') || errorMessage.includes('transaction failed')) {
+    return {
+      status: 400,
+      errorCode: 'TRANSACTION_SIMULATION_FAILED',
+      message: 'Swap transaction simulation failed.',
+      userMessage: 'The swap transaction could not be completed. Please check your balance and try again.',
+      category: 'TRANSACTION'
+    };
+  }
+  
+  // Default to internal server error for unclassified errors
+  return {
+    status: 500,
+    errorCode: 'INTERNAL_ERROR',
+    message: 'An unexpected error occurred.',
+    userMessage: 'An internal error occurred. Please try again later.',
+    category: 'INTERNAL'
+  };
+}
+
+/**
  * Controller to handle getting a swap quote from Jupiter.
  */
 async function getQuoteController(req, res) {
@@ -19,18 +101,21 @@ async function getQuoteController(req, res) {
     if (!inputMint) {
       return res.status(400).json({
         message: 'Missing required parameter: inputMint',
+        errorCode: 'MISSING_INPUT_MINT'
       });
     }
 
     if (!outputMint) {
       return res.status(400).json({
         message: 'Missing required parameter: outputMint',
+        errorCode: 'MISSING_OUTPUT_MINT'
       });
     }
 
     if (!amount) {
       return res.status(400).json({
         message: 'Missing required parameter: amount',
+        errorCode: 'MISSING_AMOUNT'
       });
     }
 
@@ -48,6 +133,7 @@ async function getQuoteController(req, res) {
     if (isNaN(parsedAmount) || parsedAmount <= 0) {
       return res.status(400).json({
         message: 'Invalid amount parameter: must be a positive number',
+        errorCode: 'INVALID_AMOUNT'
       });
     }
 
@@ -55,6 +141,7 @@ async function getQuoteController(req, res) {
     if (isNaN(parsedSlippageBps) || parsedSlippageBps < 0) {
       return res.status(400).json({
         message: 'Invalid slippageBps parameter: must be a non-negative number',
+        errorCode: 'INVALID_SLIPPAGE'
       });
     }
 
@@ -62,6 +149,7 @@ async function getQuoteController(req, res) {
     if (isNaN(parsedPlatformFeeBps) || parsedPlatformFeeBps < 0) {
       return res.status(400).json({
         message: 'Invalid platformFeeBps parameter: must be a non-negative number',
+        errorCode: 'INVALID_PLATFORM_FEE'
       });
     }
 
@@ -81,20 +169,25 @@ async function getQuoteController(req, res) {
       quoteResponse: quoteResponse
     });
   } catch (error) {
-    console.error('Error in getQuoteController:', error.message);
+    // Enhanced structured logging for observability
+    console.error('[JupiterController] Quote error:', {
+      inputMint,
+      outputMint,
+      amount,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
     
-    // Send appropriate error response
-    if (error.message.includes('HTTP error')) {
-      res.status(502).json({ 
-        message: 'Error retrieving quote from Jupiter API.',
-        error: error.message
-      });
-    } else {
-      res.status(500).json({ 
-        message: 'Error processing Jupiter quote request.',
-        error: error.message || 'An unexpected error occurred.'
-      });
-    }
+    // Classify error and send appropriate response
+    const classifiedError = classifyJupiterError(error);
+    
+    res.status(classifiedError.status).json({
+      message: classifiedError.userMessage,
+      errorCode: classifiedError.errorCode,
+      category: classifiedError.category,
+      // Include technical details for debugging (remove in production if needed)
+      details: classifiedError.message
+    });
   }
 }
 
@@ -115,12 +208,14 @@ async function executeSwapController(req, res) {
     if (!userWalletPrivateKeyBase58) {
       return res.status(400).json({
         message: 'Missing required parameter: userWalletPrivateKeyBase58',
+        errorCode: 'MISSING_PRIVATE_KEY'
       });
     }
 
     if (!quoteResponse) {
       return res.status(400).json({
         message: 'Missing required parameter: quoteResponse',
+        errorCode: 'MISSING_QUOTE_RESPONSE'
       });
     }
 
@@ -128,6 +223,7 @@ async function executeSwapController(req, res) {
     if (!quoteResponse.inputMint || !quoteResponse.outputMint || !quoteResponse.inAmount || !quoteResponse.outAmount) {
       return res.status(400).json({
         message: 'Invalid quoteResponse: missing required fields',
+        errorCode: 'INVALID_QUOTE_STRUCTURE'
       });
     }
 
@@ -158,30 +254,25 @@ async function executeSwapController(req, res) {
       ...swapResult
     });
   } catch (error) {
-    console.error('Error in executeSwapController:', error.message);
+    // Enhanced structured logging for observability
+    console.error('[JupiterController] Swap error:', {
+      inputMint: quoteResponse?.inputMint,
+      outputMint: quoteResponse?.outputMint,
+      inAmount: quoteResponse?.inAmount,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
     
-    // Send appropriate error response
-    if (error.message.includes('HTTP error')) {
-      res.status(502).json({ 
-        message: 'Error communicating with Jupiter API.',
-        error: error.message
-      });
-    } else if (error.message.includes('transaction failed')) {
-      res.status(400).json({ 
-        message: 'Swap transaction failed.',
-        error: error.message
-      });
-    } else if (error.message.includes('Invalid public key') || error.message.includes('Invalid private key')) {
-      res.status(400).json({ 
-        message: 'Invalid wallet key provided.',
-        error: error.message
-      });
-    } else {
-      res.status(500).json({ 
-        message: 'Error executing Jupiter swap.',
-        error: error.message || 'An unexpected error occurred.'
-      });
-    }
+    // Classify error and send appropriate response
+    const classifiedError = classifyJupiterError(error);
+    
+    res.status(classifiedError.status).json({
+      message: classifiedError.userMessage,
+      errorCode: classifiedError.errorCode,
+      category: classifiedError.category,
+      // Include technical details for debugging (remove in production if needed)
+      details: classifiedError.message
+    });
   }
 }
 
@@ -197,11 +288,16 @@ function getSupportedTokensController(req, res) {
       tokens: tokens
     });
   } catch (error) {
-    console.error('Error in getSupportedTokensController:', error.message);
+    console.error('[JupiterController] Supported tokens error:', {
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
     
     res.status(500).json({ 
       message: 'Error retrieving supported tokens.',
-      error: error.message || 'An unexpected error occurred.'
+      errorCode: 'TOKENS_RETRIEVAL_ERROR',
+      category: 'INTERNAL',
+      details: error.message || 'An unexpected error occurred.'
     });
   }
 }
