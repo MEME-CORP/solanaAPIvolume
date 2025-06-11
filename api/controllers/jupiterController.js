@@ -256,9 +256,9 @@ async function executeSwapController(req, res) {
   } catch (error) {
     // Enhanced structured logging for observability
     console.error('[JupiterController] Swap error:', {
-      inputMint: quoteResponse?.inputMint,
-      outputMint: quoteResponse?.outputMint,
-      inAmount: quoteResponse?.inAmount,
+      inputMint: req.body.quoteResponse?.inputMint,
+      outputMint: req.body.quoteResponse?.outputMint,
+      inAmount: req.body.quoteResponse?.inAmount,
       error: error.message,
       timestamp: new Date().toISOString()
     });
