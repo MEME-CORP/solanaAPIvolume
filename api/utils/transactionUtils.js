@@ -601,9 +601,50 @@ async function getDynamicPriorityFee(connection, accounts = []) {
     }
 }
 
+/**
+ * Sends and confirms a pre-signed VersionedTransaction from Jupiter.
+ * This is a simplified sender that does not modify the transaction, as Jupiter transactions
+ * are pre-optimized and have their own expiry mechanisms.
+ * @param {web3.Connection} connection - Solana connection object.
+ * @param {web3.VersionedTransaction} transaction - The pre-signed versioned transaction.
+ * @param {object} [options] - Optional parameters.
+ * @param {web3.Commitment} [options.commitment='confirmed'] - Desired commitment level.
+ * @returns {Promise<string>} The transaction signature.
+ */
+async function sendAndConfirmVersionedTransaction(connection, transaction, options = {}) {
+    const { commitment = 'confirmed' } = options;
+
+    console.log(`[TransactionUtils] Sending pre-signed VersionedTransaction...`);
+    
+    const rawTransaction = transaction.serialize();
+    const signature = await rateLimitedRpcCall(async () => {
+        return await connection.sendRawTransaction(rawTransaction, {
+            skipPreflight: true, // Recommended for Jupiter txs
+            preflightCommitment: commitment,
+        });
+    });
+
+    console.log(`[TransactionUtils] Transaction sent: ${signature}`);
+    console.log(`[TransactionUtils] Solscan: https://solscan.io/tx/${signature}?cluster=mainnet-beta`);
+
+    const latestBlockhash = await getRecentBlockhash(connection, commitment);
+
+    await confirmTransactionAdvanced(
+        connection, 
+        signature, 
+        latestBlockhash.blockhash,
+        latestBlockhash.lastValidBlockHeight, 
+        commitment
+    );
+
+    console.log(`[TransactionUtils] ✅ VersionedTransaction SUCCESS: ${signature}`);
+    return signature;
+}
+
 module.exports = {
     addPriorityFeeInstructions,
     sendAndConfirmTransactionWrapper,
+    sendAndConfirmVersionedTransaction,
     createSolTransferTransaction,
     solToLamports,
     lamportsToSol,

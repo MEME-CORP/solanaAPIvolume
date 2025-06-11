@@ -3,7 +3,7 @@ const bs58 = require('bs58');
 const { createJupiterApiClient } = require('@jup-ag/api');
 const { connection, retry } = require('../utils/solanaUtils');
 const { 
-  sendAndConfirmTransactionWrapper, 
+  sendAndConfirmVersionedTransaction,
   lamportsToSol,
 } = require('../utils/transactionUtils');
 
@@ -178,11 +178,11 @@ async function executeSwapService(
 
     console.log(`[JupiterService-SDK] Transaction signed, sending to network...`);
 
-    // Execute the transaction using the robust wrapper
-    const signature = await sendAndConfirmTransactionWrapper(
+    // Execute the transaction using the robust wrapper for versioned transactions
+    const signature = await sendAndConfirmVersionedTransaction(
       connection,
       transaction,
-      [userWallet]
+      // No signers array needed as the new function handles pre-signed transactions
     );
 
     console.log(`[JupiterService-SDK] ✅ Swap confirmed! Signature: ${signature}`);
