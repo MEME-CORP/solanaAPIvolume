@@ -159,8 +159,7 @@ async function executeSwapService(
         userPublicKey: userPublicKey.toBase58(),
         quoteResponse: quoteResponse,
         wrapAndUnwrapSol: wrapAndUnwrapSol,
-        dynamicComputeUnitLimit: true,
-        prioritizationFeeLamports: 'auto'
+        dynamicComputeUnitLimit: true
       }
     });
 
