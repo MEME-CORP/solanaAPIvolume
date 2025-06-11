@@ -30,25 +30,31 @@ console.log(`[JupiterService-SDK] Initializing Jupiter API client with base URL:
 const jupiterApi = createJupiterApiClient(jupiterApiConfig);
 
 /**
- * Enhanced error handler to extract meaningful error information
+ * Enhanced error handler to extract meaningful error information from the Jupiter API response.
  * @param {Error} error - The error from Jupiter SDK
- * @returns {string} Detailed error message
+ * @returns {Promise<string>} Detailed error message
  */
-function extractJupiterError(error) {
+async function extractJupiterError(error) {
+  // Log the raw error object for deep debugging
   console.error('[JupiterService-SDK] Raw error object:', {
     message: error.message,
     name: error.name,
     stack: error.stack,
     cause: error.cause,
-    // Try to extract response details if available
-    response: error.response,
-    status: error.status,
-    statusText: error.statusText
+    responseStatus: error.response?.status
   });
 
-  // Try to extract more specific error information
+  // Try to extract more specific error information from the response body
   if (error.response) {
-    return `HTTP ${error.response.status}: ${error.response.statusText || 'Unknown error'}`;
+    try {
+      // The response body contains the real error from Jupiter's API
+      const errorBody = await error.response.json();
+      const errorMessage = errorBody.error || JSON.stringify(errorBody);
+      return `Jupiter API Error (HTTP ${error.response.status}): ${errorMessage}`;
+    } catch (e) {
+      // Fallback if the body isn't valid JSON or can't be read
+      return `HTTP ${error.response.status}: ${error.response.statusText || 'Failed to parse error response'}`;
+    }
   }
   
   if (error.cause) {
@@ -112,7 +118,7 @@ async function getQuoteService(
     return quote;
 
   } catch (error) {
-    const detailedError = extractJupiterError(error);
+    const detailedError = await extractJupiterError(error);
     console.error('[JupiterService-SDK] Error fetching Jupiter quote:', detailedError);
     throw new Error(detailedError);
   }
@@ -195,7 +201,7 @@ async function executeSwapService(
     };
 
   } catch (error) {
-    const detailedError = extractJupiterError(error);
+    const detailedError = await extractJupiterError(error);
     console.error('[JupiterService-SDK] Error executing swap:', detailedError);
     throw new Error(detailedError);
   }
