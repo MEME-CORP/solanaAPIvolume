@@ -18,12 +18,52 @@ const TOKENS = {
 // Fee collector wallet address
 const FEE_COLLECTOR_ADDRESS = 'FKS2idx6M1WyBeWtMr2tY9XSFsVvKNy84rS9jq9W1qfo';
 
-// Instantiate the Jupiter API client once and reuse it
-const jupiterApi = createJupiterApiClient();
+// Configure Jupiter API client with proper base URL for free usage
+// Based on Jupiter docs: https://dev.jup.ag/docs/ - use lite-api.jup.ag for free usage
+const jupiterApiConfig = {
+  basePath: 'https://lite-api.jup.ag'
+};
+
+console.log(`[JupiterService-SDK] Initializing Jupiter API client with base URL: ${jupiterApiConfig.basePath}`);
+
+// Instantiate the Jupiter API client with proper configuration
+const jupiterApi = createJupiterApiClient(jupiterApiConfig);
 
 /**
- * [REFACTORED] Fetch price quote from Jupiter using the SDK.
- * This replaces the manual fetch call with a more reliable SDK method.
+ * Enhanced error handler to extract meaningful error information
+ * @param {Error} error - The error from Jupiter SDK
+ * @returns {string} Detailed error message
+ */
+function extractJupiterError(error) {
+  console.error('[JupiterService-SDK] Raw error object:', {
+    message: error.message,
+    name: error.name,
+    stack: error.stack,
+    cause: error.cause,
+    // Try to extract response details if available
+    response: error.response,
+    status: error.status,
+    statusText: error.statusText
+  });
+
+  // Try to extract more specific error information
+  if (error.response) {
+    return `HTTP ${error.response.status}: ${error.response.statusText || 'Unknown error'}`;
+  }
+  
+  if (error.cause) {
+    return `${error.message} (Cause: ${error.cause.message || error.cause})`;
+  }
+  
+  if (error.status) {
+    return `HTTP ${error.status}: ${error.message}`;
+  }
+  
+  return error.message || 'Unknown Jupiter API error';
+}
+
+/**
+ * [ENHANCED] Fetch price quote from Jupiter using the SDK with better error handling.
  * @returns {Promise<import('@jup-ag/api').QuoteResponse>} The Jupiter quote response.
  * @throws {Error} If the quote cannot be fetched.
  */
@@ -33,7 +73,7 @@ async function getQuoteService(
   amount, 
   slippageBps = 50,
   onlyDirectRoutes = false,
-  asLegacyTransaction = false, // Note: asLegacyTransaction may have limited support
+  asLegacyTransaction = false,
   platformFeeBps = 0
 ) {
   try {
@@ -41,6 +81,12 @@ async function getQuoteService(
     const resolvedOutputMint = TOKENS[outputMint] || outputMint;
     
     console.log(`[JupiterService-SDK] Requesting quote: ${amount} of ${resolvedInputMint} → ${resolvedOutputMint}`);
+    console.log(`[JupiterService-SDK] Quote parameters:`, {
+      slippageBps,
+      onlyDirectRoutes,
+      asLegacyTransaction,
+      platformFeeBps
+    });
     
     const quote = await jupiterApi.quoteGet({
       inputMint: resolvedInputMint,
@@ -53,29 +99,36 @@ async function getQuoteService(
     });
 
     if (!quote) {
-      // This will be caught by the controller and classified as NO_ROUTE_FOUND
       throw new Error('Could not find any route');
     }
+    
+    console.log(`[JupiterService-SDK] ✅ Quote successful:`, {
+      inAmount: quote.inAmount,
+      outAmount: quote.outAmount,
+      priceImpactPct: quote.priceImpactPct,
+      routePlan: quote.routePlan?.length || 0
+    });
     
     return quote;
 
   } catch (error) {
-    console.error('[JupiterService-SDK] Error fetching Jupiter quote:', error);
-    // Re-throw the error so the controller can classify it
-    throw error;
+    const detailedError = extractJupiterError(error);
+    console.error('[JupiterService-SDK] Error fetching Jupiter quote:', detailedError);
+    throw new Error(detailedError);
   }
 }
 
 /**
- * [REFACTORED] Execute a swap on Jupiter using the SDK.
- * This is the core fix that resolves serialization and Token-2022 issues.
+ * [ENHANCED] Execute a swap on Jupiter using the SDK with better error handling.
  * @returns {Promise<object>} Swap result including transaction ID.
  * @throws {Error} If the swap fails.
  */
 async function executeSwapService(
   userWalletPrivateKeyBase58,
   quoteResponse,
-  // wrapAndUnwrapSol and asLegacyTransaction are now handled in swapPost
+  wrapAndUnwrapSol = true,
+  asLegacyTransaction = false,
+  collectFees = true
 ) {
   try {
     const secretKey = bs58.decode(userWalletPrivateKeyBase58);
@@ -83,32 +136,48 @@ async function executeSwapService(
     const userPublicKey = userWallet.publicKey;
 
     console.log(`[JupiterService-SDK] Executing swap for user: ${userPublicKey.toBase58()}`);
+    console.log(`[JupiterService-SDK] Swap parameters:`, {
+      inputMint: quoteResponse.inputMint,
+      outputMint: quoteResponse.outputMint,
+      inAmount: quoteResponse.inAmount,
+      outAmount: quoteResponse.outAmount,
+      wrapAndUnwrapSol,
+      asLegacyTransaction
+    });
 
-    // Get the serialized transaction from the Jupiter API via the SDK
-    // This is the key step that fixes the previous errors.
-    const { swapTransaction } = await jupiterApi.swapPost({
+    // Enhanced swap request with proper error handling
+    console.log(`[JupiterService-SDK] Calling Jupiter swapPost API...`);
+    
+    const swapResult = await jupiterApi.swapPost({
       swapRequest: {
         userPublicKey: userPublicKey.toBase58(),
         quoteResponse: quoteResponse,
-        wrapAndUnwrapSol: true,
-        // The SDK and API handle fee and compute unit optimization automatically.
-        dynamicComputeUnitLimit: true, 
-        prioritizationFeeLamports: 'auto' // Recommended setting
+        wrapAndUnwrapSol: wrapAndUnwrapSol,
+        dynamicComputeUnitLimit: true,
+        prioritizationFeeLamports: 'auto'
       }
     });
 
+    if (!swapResult || !swapResult.swapTransaction) {
+      throw new Error('Invalid swap response: missing swapTransaction');
+    }
+
+    console.log(`[JupiterService-SDK] ✅ Swap transaction received from Jupiter API`);
+
     // Deserialize the transaction
-    const swapTransactionBuf = Buffer.from(swapTransaction, 'base64');
+    const swapTransactionBuf = Buffer.from(swapResult.swapTransaction, 'base64');
     const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
 
     // Sign the transaction
     transaction.sign([userWallet]);
 
+    console.log(`[JupiterService-SDK] Transaction signed, sending to network...`);
+
     // Execute the transaction using the robust wrapper
     const signature = await sendAndConfirmTransactionWrapper(
       connection,
       transaction,
-      [userWallet] // The userWallet is the only required signer
+      [userWallet]
     );
 
     console.log(`[JupiterService-SDK] ✅ Swap confirmed! Signature: ${signature}`);
@@ -119,16 +188,16 @@ async function executeSwapService(
       status: 'success',
       transactionId: signature,
       newBalanceSol: lamportsToSol(newBalance),
-      // Fee collection logic can be added back here if needed,
-      // but the primary swap logic is now much cleaner.
-      feeCollection: { status: 'skipped', message: 'Fee collection temporarily disabled during SDK refactor.' }
+      feeCollection: { 
+        status: 'skipped', 
+        message: 'Fee collection temporarily disabled during SDK refactor.' 
+      }
     };
 
   } catch (error) {
-    console.error('[JupiterService-SDK] Error executing swap:', error.message);
-    // Re-throw the error to be handled by the controller's classifier
-    // Include full error for better logging in the controller
-    throw new Error(`Failed to execute swap: ${error.message}`, { cause: error });
+    const detailedError = extractJupiterError(error);
+    console.error('[JupiterService-SDK] Error executing swap:', detailedError);
+    throw new Error(detailedError);
   }
 }
 
