@@ -114,12 +114,26 @@ function sleep(ms) {
 
 /**
  * Adds priority fee instructions to a transaction.
- * @param {web3.Transaction} transaction - The transaction to add priority fees to.
+ * Note: VersionedTransaction objects (from Jupiter) don't support manual priority fee modification
+ * as they are pre-optimized and handle priority fees internally.
+ * @param {web3.Transaction|web3.VersionedTransaction} transaction - The transaction to add priority fees to.
  * @param {number} [priorityFeeMicrolamports=100000] - Priority fee in microlamports.
  * @param {number} [computeUnitLimit=200000] - Compute unit limit.
- * @returns {web3.Transaction} The transaction with priority fee instructions added.
+ * @returns {web3.Transaction|web3.VersionedTransaction} The transaction (modified if regular Transaction).
  */
 function addPriorityFeeInstructions(transaction, priorityFeeMicrolamports = 100000, computeUnitLimit = 200000) {
+    // Check if this is a VersionedTransaction (from Jupiter)
+    if (transaction instanceof web3.VersionedTransaction) {
+        console.log(`[TransactionUtils] VersionedTransaction detected - priority fees handled internally by Jupiter`);
+        return transaction; // Return as-is, Jupiter handles priority fees internally
+    }
+    
+    // Handle regular Transaction objects
+    if (!transaction.instructions) {
+        console.warn(`[TransactionUtils] Transaction object missing instructions property - skipping priority fee addition`);
+        return transaction;
+    }
+    
     console.log(`[TransactionUtils] Adding priority fee: ${priorityFeeMicrolamports} microlamports, CU limit: ${computeUnitLimit}`);
     
     // Add compute unit limit instruction
