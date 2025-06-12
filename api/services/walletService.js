@@ -11,6 +11,7 @@ const {
   solToLamports,
   lamportsToSol
 } = require('../utils/transactionUtils');
+const web3 = require('@solana/web3.js');
 
 // Define the Solana mainnet RPC endpoint
 const MAINNET_URL = 'https://api.mainnet-beta.solana.com';
@@ -441,10 +442,52 @@ async function returnFundsToMotherWallet(childWalletPrivateKeyBase58, motherWall
   }
 }
 
+/**
+ * Gets SPL token balance for a wallet
+ * @param {string} walletPublicKey - The wallet's public key
+ * @param {string} mintAddress - The token mint address
+ * @returns {Promise<{publicKey: string, mintAddress: string, balance: number, decimals: number}>}
+ */
+async function getTokenBalance(walletPublicKey, mintAddress) {
+    try {
+        // Validate inputs
+        if (!walletPublicKey || !mintAddress) {
+            throw new Error('Missing required parameters: walletPublicKey and mintAddress');
+        }
+
+        // Validate public key format
+        try {
+            new web3.PublicKey(walletPublicKey);
+        } catch (error) {
+            throw new Error('Invalid wallet public key format');
+        }
+
+        // Validate mint address format
+        try {
+            new web3.PublicKey(mintAddress);
+        } catch (error) {
+            throw new Error('Invalid token mint address format');
+        }
+
+        const { balance, decimals } = await solanaUtils.getTokenBalance(walletPublicKey, mintAddress);
+
+        return {
+            publicKey: walletPublicKey,
+            mintAddress: mintAddress,
+            balance: balance,
+            decimals: decimals
+        };
+    } catch (error) {
+        console.error('[WalletService] Error getting token balance:', error.message);
+        throw error;
+    }
+}
+
 module.exports = {
   createOrImportMotherWalletService,
   getWalletInfo,
   deriveChildWallets,
   fundChildWallets,
-  returnFundsToMotherWallet
+  returnFundsToMotherWallet,
+  getTokenBalance
 }; 

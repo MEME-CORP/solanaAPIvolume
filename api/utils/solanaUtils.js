@@ -1,4 +1,5 @@
 const { Connection } = require('@solana/web3.js');
+const { TOKEN_PROGRAM_ID } = require('@solana/spl-token');
 
 // Get RPC URL from environment variable or use default mainnet-beta
 const MAINNET_URL = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
@@ -72,12 +73,44 @@ async function getRecentBlockhash(connectionOverride = null, commitment = 'confi
   return result;
 }
 
+/**
+ * Gets SPL token balance for a specific mint
+ * @param {string} walletPublicKey - The wallet's public key
+ * @param {string} mintAddress - The token mint address
+ * @returns {Promise<{balance: number, decimals: number}>} Token balance and decimals
+ */
+async function getTokenBalance(walletPublicKey, mintAddress) {
+    try {
+        console.log(`[SolanaUtils] Getting token balance for mint: ${mintAddress}`);
+        
+        const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
+            new web3.PublicKey(walletPublicKey),
+            { mint: new web3.PublicKey(mintAddress) }
+        );
+
+        if (tokenAccounts.value.length === 0) {
+            return { balance: 0, decimals: 0 };
+        }
+
+        const account = tokenAccounts.value[0];
+        const balance = Number(account.account.data.parsed.info.tokenAmount.amount);
+        const decimals = account.account.data.parsed.info.tokenAmount.decimals;
+
+        console.log(`[SolanaUtils] Token balance: ${balance} (decimals: ${decimals})`);
+        return { balance, decimals };
+    } catch (error) {
+        console.error(`[SolanaUtils] Error getting token balance: ${error.message}`);
+        throw error;
+    }
+}
+
 module.exports = {
   connection,
   delay,
   sleep,
   retry,
   getRecentBlockhash,
+  getTokenBalance,
   // Legacy exports for compatibility
   MAINNET_URL
 }; 

@@ -191,6 +191,26 @@ The API provides the following categories of endpoints:
   }
   ```
 
+#### Get SPL Token Balance
+
+- **Endpoint**: `GET /api/wallets/token-balance/:walletPublicKey`
+- **Description**: Gets the balance of a specific SPL token for a wallet.
+- **Query Parameters**:
+  - `mintAddress` (required): The mint address of the SPL token
+- **Example**: `GET /api/wallets/token-balance/ABC123...?mintAddress=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`
+- **Response**:
+  ```json
+  {
+    "message": "Token balance retrieved successfully",
+    "data": {
+      "publicKey": "wallet_public_key",
+      "mintAddress": "token_mint_address",
+      "balance": 1000000,
+      "decimals": 6
+    }
+  }
+  ```
+
 ### Jupiter DEX Integration
 
 #### Get Jupiter Swap Quote

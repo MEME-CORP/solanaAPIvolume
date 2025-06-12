@@ -304,4 +304,37 @@ router.post('/return-funds', walletController.returnFundsController);
  */
 router.get('/balance/:walletPublicKey', walletController.getWalletBalanceController);
 
+/**
+ * @swagger
+ * /api/wallets/token-balance/{walletPublicKey}:
+ *   get:
+ *     summary: Get the SPL token balance of a wallet.
+ *     tags: [Wallet]
+ *     parameters:
+ *       - in: path
+ *         name: walletPublicKey
+ *         schema:
+ *           type: string
+ *         required: true
+ *         description: The public key of the wallet.
+ *     responses:
+ *       200:
+ *         description: Successfully retrieved wallet token balance.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 publicKey:
+ *                   type: string
+ *                 tokenBalance:
+ *                   type: number
+ *                   description: Wallet token balance in lamports (1 SOL = 1,000,000,000 lamports)
+ *       400:
+ *         description: Invalid public key format.
+ *       500:
+ *         description: Error retrieving wallet token balance.
+ */
+router.get('/token-balance/:walletPublicKey', walletController.getTokenBalanceController);
+
 module.exports = router; 

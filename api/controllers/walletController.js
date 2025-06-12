@@ -285,6 +285,51 @@ async function getWalletBalanceController(req, res) {
   }
 }
 
+/**
+ * Controller to handle getting SPL token balance for a wallet.
+ */
+async function getTokenBalanceController(req, res) {
+    try {
+        const { walletPublicKey } = req.params;
+        const { mintAddress } = req.query;
+        
+        if (!walletPublicKey) {
+            return res.status(400).json({
+                message: 'Missing required parameter: walletPublicKey',
+            });
+        }
+
+        if (!mintAddress) {
+            return res.status(400).json({
+                message: 'Missing required parameter: mintAddress',
+            });
+        }
+
+        const tokenBalance = await walletService.getTokenBalance(walletPublicKey, mintAddress);
+        
+        res.status(200).json({
+            message: 'Token balance retrieved successfully',
+            data: tokenBalance
+        });
+    } catch (error) {
+        console.error('Error in getTokenBalanceController:', error.message);
+        
+        // Send appropriate error response
+        if (error.message.includes('Invalid wallet public key format') || 
+            error.message.includes('Invalid token mint address format')) {
+            res.status(400).json({ 
+                message: error.message,
+                error: 'VALIDATION_ERROR'
+            });
+        } else {
+            res.status(500).json({ 
+                message: 'Error retrieving token balance.',
+                error: error.message || 'An unexpected error occurred.'
+            });
+        }
+    }
+}
+
 module.exports = {
   createOrImportMotherWalletController,
   getMotherWalletInfoController,
@@ -292,4 +337,5 @@ module.exports = {
   fundChildWalletsController,
   returnFundsController,
   getWalletBalanceController,
+  getTokenBalanceController
 }; 
