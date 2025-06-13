@@ -5,6 +5,7 @@ const { connection, retry } = require('../utils/solanaUtils');
 const { 
   sendAndConfirmVersionedTransaction,
   lamportsToSol,
+  rateLimitedRpcCall,
 } = require('../utils/transactionUtils');
 
 // Common token addresses
@@ -176,8 +177,12 @@ async function executeSwapService(
         // Pre-flight check for native SOL swaps to prevent "custom program error: 1"
     if (quoteResponse.inputMint === TOKENS.SOL) {
       console.log(`[JupiterService-SDK] Performing pre-flight balance check for native SOL swap...`);
-      const balance = await connection.getBalance(userPublicKey);
-      const feeData = await connection.getFeeForMessage(transaction.message, 'confirmed');
+      const balance = await rateLimitedRpcCall(async () => {
+        return await connection.getBalance(userPublicKey);
+      });
+      const feeData = await rateLimitedRpcCall(async () => {
+        return await connection.getFeeForMessage(transaction.message, 'confirmed');
+      });
       const fee = feeData.value || 5000; // Use 5000 lamports as a fallback fee
 
       // RENT for the temporary wSOL account. This is a standard cost for creating a new token account.
@@ -213,7 +218,9 @@ async function executeSwapService(
 
     console.log(`[JupiterService-SDK] ✅ Swap confirmed! Signature: ${signature}`);
 
-    const newBalance = await connection.getBalance(userPublicKey);
+    const newBalance = await rateLimitedRpcCall(async () => {
+      return await connection.getBalance(userPublicKey);
+    });
     
     return {
       status: 'success',

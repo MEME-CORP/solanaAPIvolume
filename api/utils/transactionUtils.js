@@ -563,10 +563,12 @@ async function getDynamicPriorityFee(connection, accounts = []) {
     try {
         console.log(`[TransactionUtils] Getting dynamic priority fee...`);
         
-        // Try to get recent prioritization fees
+        // Try to get recent prioritization fees with rate limiting protection
         if (connection.getRecentPrioritizationFees) {
-            const recentFees = await connection.getRecentPrioritizationFees({
-                lockedWritableAccounts: accounts.slice(0, 5)
+            const recentFees = await rateLimitedRpcCall(async () => {
+                return await connection.getRecentPrioritizationFees({
+                    lockedWritableAccounts: accounts.slice(0, 5)
+                });
             });
             
             if (recentFees && recentFees.length > 0) {

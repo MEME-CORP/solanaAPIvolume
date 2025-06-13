@@ -3,13 +3,15 @@ const bs58 = require('bs58');
 const path = require('path');
 const fs = require('fs');
 const { connection, retry, delay } = require('../utils/solanaUtils');
+const solanaUtils = require('../utils/solanaUtils');
 const { 
   sendAndConfirmTransactionWrapper, 
   createSolTransferTransaction, 
   getDynamicPriorityFee,
   calculateTransactionFee,
   solToLamports,
-  lamportsToSol
+  lamportsToSol,
+  rateLimitedRpcCall
 } = require('../utils/transactionUtils');
 const web3 = require('@solana/web3.js');
 
@@ -68,7 +70,9 @@ async function getWalletInfo(publicKeyStr) {
     const publicKey = new PublicKey(publicKeyStr);
     
     // Get the wallet's SOL balance in lamports
-    const balanceLamports = await connection.getBalance(publicKey);
+    const balanceLamports = await rateLimitedRpcCall(async () => {
+      return await connection.getBalance(publicKey);
+    });
     
     // Convert lamports to SOL (1 SOL = 1,000,000,000 lamports)
     const balanceSol = balanceLamports / 1_000_000_000;
@@ -163,7 +167,9 @@ async function fundChildWallets(motherWalletPrivateKeyBase58, childWallets) {
     console.log(`[WalletService] Mother wallet public key: ${motherPublicKey}`);
     
     // Check mother wallet balance
-    const motherBalance = await retry(async () => await connection.getBalance(motherWallet.publicKey));
+    const motherBalance = await rateLimitedRpcCall(async () => {
+      return await connection.getBalance(motherWallet.publicKey);
+    });
     const motherBalanceInSol = lamportsToSol(motherBalance);
     console.log(`[WalletService] Mother wallet balance: ${motherBalanceInSol} SOL`);
     
@@ -213,7 +219,9 @@ async function fundChildWallets(motherWalletPrivateKeyBase58, childWallets) {
       console.log(`[WalletService] Funding wallet ${i + 1}/${childWallets.length}: ${publicKey} with ${amountSol} SOL`);
       
       // Check remaining balance before each transaction
-      const currentBalance = await retry(async () => await connection.getBalance(motherWallet.publicKey));
+      const currentBalance = await rateLimitedRpcCall(async () => {
+        return await connection.getBalance(motherWallet.publicKey);
+      });
       const remainingTransactions = childWallets.length - i;
       const neededForRemaining = remainingTransactions * (solToLamports(amountSol) + feePerTransaction);
       
@@ -231,7 +239,9 @@ async function fundChildWallets(motherWalletPrivateKeyBase58, childWallets) {
         const childPublicKey = new PublicKey(publicKey);
         
         // Get current balance
-        const childCurrentBalance = await retry(async () => await connection.getBalance(childPublicKey));
+        const childCurrentBalance = await rateLimitedRpcCall(async () => {
+          return await connection.getBalance(childPublicKey);
+        });
         console.log(`[WalletService] Current child balance: ${lamportsToSol(childCurrentBalance)} SOL`);
         
         // Create transfer transaction using robust utilities
@@ -266,7 +276,9 @@ async function fundChildWallets(motherWalletPrivateKeyBase58, childWallets) {
         console.log(`[WalletService] ✅ Funding SUCCESS!`);
         
         // Get updated balance
-        const newBalance = await retry(async () => await connection.getBalance(childPublicKey));
+        const newBalance = await rateLimitedRpcCall(async () => {
+          return await connection.getBalance(childPublicKey);
+        });
         console.log(`[WalletService] New child balance: ${lamportsToSol(newBalance)} SOL`);
         
         results.push({
@@ -320,7 +332,9 @@ async function fundChildWallets(motherWalletPrivateKeyBase58, childWallets) {
     }
     
     // Get final mother wallet balance
-    const finalBalance = await retry(async () => await connection.getBalance(motherWallet.publicKey));
+    const finalBalance = await rateLimitedRpcCall(async () => {
+      return await connection.getBalance(motherWallet.publicKey);
+    });
     console.log(`[WalletService] Final mother wallet balance: ${lamportsToSol(finalBalance)} SOL`);
     console.log(`[WalletService] 📊 Success rate: ${successfulTransactions}/${totalAttempted} (${(successRate * 100).toFixed(1)}%)`);
     
@@ -364,7 +378,9 @@ async function returnFundsToMotherWallet(childWalletPrivateKeyBase58, motherWall
     const motherPublicKey = new PublicKey(motherWalletPublicKey);
     
     // Check child wallet balance
-    const childBalance = await retry(async () => await connection.getBalance(childWallet.publicKey));
+    const childBalance = await rateLimitedRpcCall(async () => {
+      return await connection.getBalance(childWallet.publicKey);
+    });
     const childBalanceInSol = lamportsToSol(childBalance);
     console.log(`[WalletService] Child wallet balance: ${childBalanceInSol} SOL`);
     
@@ -423,8 +439,12 @@ async function returnFundsToMotherWallet(childWalletPrivateKeyBase58, motherWall
     console.log(`[WalletService] ✅ Return funds SUCCESS!`);
     
     // Get updated balances
-    const newChildBalance = await retry(async () => await connection.getBalance(childWallet.publicKey));
-    const newMotherBalance = await retry(async () => await connection.getBalance(motherPublicKey));
+    const newChildBalance = await rateLimitedRpcCall(async () => {
+      return await connection.getBalance(childWallet.publicKey);
+    });
+    const newMotherBalance = await rateLimitedRpcCall(async () => {
+      return await connection.getBalance(motherPublicKey);
+    });
     
     console.log(`[WalletService] New child wallet balance: ${lamportsToSol(newChildBalance)} SOL`);
     console.log(`[WalletService] New mother wallet balance: ${lamportsToSol(newMotherBalance)} SOL`);
