@@ -669,6 +669,7 @@ module.exports = {
     confirmTransactionAdvanced,
     checkTransactionStatus,
     sleep,
+    rateLimitedRpcCall,
     getRpcConfig: () => currentRpcConfig,
     RPC_CONFIGS,
     // Jupiter-specific functions
