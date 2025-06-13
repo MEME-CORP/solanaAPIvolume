@@ -114,26 +114,12 @@ function sleep(ms) {
 
 /**
  * Adds priority fee instructions to a transaction.
- * Note: VersionedTransaction objects (from Jupiter) don't support manual priority fee modification
- * as they are pre-optimized and handle priority fees internally.
- * @param {web3.Transaction|web3.VersionedTransaction} transaction - The transaction to add priority fees to.
+ * @param {web3.Transaction} transaction - The transaction to add priority fees to.
  * @param {number} [priorityFeeMicrolamports=100000] - Priority fee in microlamports.
  * @param {number} [computeUnitLimit=200000] - Compute unit limit.
- * @returns {web3.Transaction|web3.VersionedTransaction} The transaction (modified if regular Transaction).
+ * @returns {web3.Transaction} The transaction with priority fee instructions added.
  */
 function addPriorityFeeInstructions(transaction, priorityFeeMicrolamports = 100000, computeUnitLimit = 200000) {
-    // Check if this is a VersionedTransaction (from Jupiter)
-    if (transaction instanceof web3.VersionedTransaction) {
-        console.log(`[TransactionUtils] VersionedTransaction detected - priority fees handled internally by Jupiter`);
-        return transaction; // Return as-is, Jupiter handles priority fees internally
-    }
-    
-    // Handle regular Transaction objects
-    if (!transaction.instructions) {
-        console.warn(`[TransactionUtils] Transaction object missing instructions property - skipping priority fee addition`);
-        return transaction;
-    }
-    
     console.log(`[TransactionUtils] Adding priority fee: ${priorityFeeMicrolamports} microlamports, CU limit: ${computeUnitLimit}`);
     
     // Add compute unit limit instruction
@@ -601,6 +587,29 @@ async function getDynamicPriorityFee(connection, accounts = []) {
     }
 }
 
+// ============================================================================
+// JUPITER-SPECIFIC TRANSACTION UTILITIES
+// ============================================================================
+
+/**
+ * Handles priority fee instructions for VersionedTransaction objects from Jupiter.
+ * Note: VersionedTransaction objects don't support manual priority fee modification
+ * as they are pre-optimized and handle priority fees internally.
+ * @param {web3.VersionedTransaction} transaction - The VersionedTransaction to check.
+ * @param {number} [priorityFeeMicrolamports=100000] - Priority fee in microlamports (ignored for VersionedTransaction).
+ * @param {number} [computeUnitLimit=200000] - Compute unit limit (ignored for VersionedTransaction).
+ * @returns {web3.VersionedTransaction} The transaction (unchanged for VersionedTransaction).
+ */
+function addPriorityFeeInstructionsVersioned(transaction, priorityFeeMicrolamports = 100000, computeUnitLimit = 200000) {
+    if (transaction instanceof web3.VersionedTransaction) {
+        console.log(`[TransactionUtils] VersionedTransaction detected - priority fees handled internally by Jupiter`);
+        return transaction; // Return as-is, Jupiter handles priority fees internally
+    }
+    
+    console.warn(`[TransactionUtils] addPriorityFeeInstructionsVersioned called with non-VersionedTransaction - use addPriorityFeeInstructions instead`);
+    return transaction;
+}
+
 /**
  * Sends and confirms a pre-signed VersionedTransaction from Jupiter.
  * This is a simplified sender that does not modify the transaction, as Jupiter transactions
@@ -644,7 +653,6 @@ async function sendAndConfirmVersionedTransaction(connection, transaction, optio
 module.exports = {
     addPriorityFeeInstructions,
     sendAndConfirmTransactionWrapper,
-    sendAndConfirmVersionedTransaction,
     createSolTransferTransaction,
     solToLamports,
     lamportsToSol,
@@ -656,5 +664,8 @@ module.exports = {
     checkTransactionStatus,
     sleep,
     getRpcConfig: () => currentRpcConfig,
-    RPC_CONFIGS
+    RPC_CONFIGS,
+    // Jupiter-specific functions
+    addPriorityFeeInstructionsVersioned,
+    sendAndConfirmVersionedTransaction
 }; 
