@@ -177,7 +177,7 @@ async function executeSwapService(
     if (quoteResponse.inputMint === TOKENS.SOL) {
       console.log(`[JupiterService-SDK] Performing pre-flight balance check for native SOL swap...`);
       const balance = await connection.getBalance(userPublicKey);
-      const feeData = await connection.getFeeForMessage(transaction.compileMessage(), 'confirmed');
+      const feeData = await connection.getFeeForMessage(transaction.message, 'confirmed');
       const fee = feeData.value || 5000; // Use 5000 lamports as a fallback fee
 
       const requiredLamports = BigInt(quoteResponse.inAmount) + BigInt(fee);
