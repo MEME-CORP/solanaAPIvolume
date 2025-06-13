@@ -1,5 +1,6 @@
 const { Connection } = require('@solana/web3.js');
 const { TOKEN_PROGRAM_ID } = require('@solana/spl-token');
+const web3 = require('@solana/web3.js');
 
 // Get RPC URL from environment variable or use default mainnet-beta
 const MAINNET_URL = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
