@@ -150,20 +150,22 @@ function addPriorityFeeInstructions(transaction, priorityFeeMicrolamports = 1000
  */
 async function confirmTransactionAdvanced(connection, signature, blockhash, lastValidBlockHeight, commitment = 'confirmed') {
     console.log(`[TransactionUtils] Starting ADVANCED WebSocket confirmation for: ${signature.slice(0, 8)}...`);
-    
+
+    // Per user feedback, the WebSocket-based confirmation is preferred and more reliable.
+    // We will no longer fall back to full polling if the WebSocket connection fails,
+    // as the WebSocket handler has its own timeout and final status check logic.
+    // This avoids unnecessary RPC calls and relies on the robust WebSocket implementation.
     if (currentRpcConfig.useWebSocket) {
         try {
-            // PRIMARY: WebSocket-based confirmation (most efficient)
             return await confirmWithWebSocket(connection, signature, blockhash, lastValidBlockHeight, commitment);
         } catch (error) {
-            console.warn(`[TransactionUtils] WebSocket confirmation failed: ${error.message}`);
-            console.log(`[TransactionUtils] Falling back to polling confirmation...`);
-            
-            // FALLBACK: Use polling with rate limiting
-            return await confirmWithPolling(connection, signature, blockhash, lastValidBlockHeight, commitment);
+            // Let errors (like timeouts) propagate to the retry logic in sendAndConfirmTransactionWrapper.
+            console.warn(`[TransactionUtils] WebSocket confirmation failed: ${error.message}. This may trigger a retry.`);
+            throw error;
         }
     } else {
-        // For providers that prefer polling
+        // Fallback for RPC configs that do not support or recommend WebSockets.
+        console.log(`[TransactionUtils] RPC config directs to use polling confirmation.`);
         return await confirmWithPolling(connection, signature, blockhash, lastValidBlockHeight, commitment);
     }
 }
@@ -180,17 +182,18 @@ async function confirmWithWebSocket(connection, signature, blockhash, lastValidB
         let resolved = false;
         
         const cleanup = () => {
-            if (subscriptionId) {
-                try {
-                    connection.removeSignatureListener(subscriptionId);
-                } catch (e) {
-                    // Ignore cleanup errors
-                }
-                subscriptionId = null;
-            }
             if (timeoutId) {
                 clearTimeout(timeoutId);
                 timeoutId = null;
+            }
+            if (subscriptionId) {
+                const subId = subscriptionId;
+                subscriptionId = null;
+                // Fire-and-forget promise to unsubscribe.
+                // The .catch() is to prevent unhandled promise rejection warnings. The underlying
+                // web3.js warning about "Ignored unsubscribe" is benign and expected if the
+                // node already closed the subscription.
+                connection.removeSignatureListener(subId).catch(() => {});
             }
         };
         
