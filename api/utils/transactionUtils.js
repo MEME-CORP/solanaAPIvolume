@@ -6,15 +6,16 @@ const { connection, delay } = require('./solanaUtils');
  * These settings are optimized for each provider type
  */
 const RPC_CONFIGS = {
-    // Public mainnet-beta (free tier) - strict rate limiting required
+    // Public mainnet-beta (free tier) - VERY strict rate limiting required
+    // Official limits: 100 req/10s total, 40 req/10s per method, 40 concurrent connections
     PUBLIC: {
         name: 'Public Mainnet-Beta',
-        rpcCallInterval: 300, // 300ms between calls (conservative for 100 req/10s limit)
-        maxConcurrentRequests: 3, // Limit concurrent requests
-        retryBackoff: 2000, // 2s backoff for 429 errors
-        confirmationTimeout: 45000, // 45s confirmation timeout
+        rpcCallInterval: 1000, // 1000ms between calls (conservative for 100 req/10s = max 10 req/s)
+        maxConcurrentRequests: 2, // Very low concurrent requests (limit is 40)
+        retryBackoff: 5000, // 5s backoff for 429 errors (much longer)
+        confirmationTimeout: 60000, // 60s confirmation timeout (longer for rate-limited environment)
         useWebSocket: true, // Always use WebSocket to avoid polling
-        description: 'Free public RPC with strict rate limits'
+        description: 'Free public RPC with VERY strict rate limits - 100 req/10s total'
     },
     
     // Premium providers (QuickNode, Helius, Alchemy) - relaxed settings
