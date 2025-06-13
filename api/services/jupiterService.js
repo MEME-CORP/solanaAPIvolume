@@ -179,19 +179,23 @@ async function executeSwapService(
       const balance = await connection.getBalance(userPublicKey);
       const feeData = await connection.getFeeForMessage(transaction.message, 'confirmed');
       const fee = feeData.value || 5000; // Use 5000 lamports as a fallback fee
-      
-      // Apply congestion buffer for network congestion scenarios
-      // Based on Jupiter docs: during high traffic, actual fees can be 3-5x higher than estimated
-      const congestionMultiplier = 4; // Conservative 4x multiplier for network congestion
+
+      // RENT for the temporary wSOL account. This is a standard cost for creating a new token account.
+      // The failed transaction shows this value is 2,039,280 lamports.
+      const RENT_FOR_WSOL_ACCOUNT = 2039280;
+
+      // The congestion buffer should only apply to the network fee, not the entire amount.
+      const congestionMultiplier = 4; // Conservative 4x multiplier
       const bufferedFee = fee * congestionMultiplier;
 
-      const requiredLamports = BigInt(quoteResponse.inAmount) + BigInt(bufferedFee);
+      // Total required lamports = Swap Amount + Rent for wSOL Account + Buffered Network Fee
+      const requiredLamports = BigInt(quoteResponse.inAmount) + BigInt(RENT_FOR_WSOL_ACCOUNT) + BigInt(bufferedFee);
 
-      console.log(`[JupiterService-SDK] Required SOL: ~${lamportsToSol(Number(requiredLamports))} (Amount: ${lamportsToSol(Number(quoteResponse.inAmount))} + Fee: ${lamportsToSol(fee)} + Congestion Buffer: ${lamportsToSol(bufferedFee - fee)})`);
+      console.log(`[JupiterService-SDK] Required SOL: ~${lamportsToSol(Number(requiredLamports))} (Amount: ${lamportsToSol(Number(quoteResponse.inAmount))} + Rent: ${lamportsToSol(RENT_FOR_WSOL_ACCOUNT)} + Fee w/Buffer: ${lamportsToSol(bufferedFee)})`);
       console.log(`[JupiterService-SDK] Available SOL: ${lamportsToSol(balance)}`);
 
       if (BigInt(balance) < requiredLamports) {
-        throw new Error(`Insufficient SOL balance. Wallet has ${lamportsToSol(balance)} SOL, but needs ~${lamportsToSol(Number(requiredLamports))} for the swap amount and transaction fees (including congestion buffer).`);
+        throw new Error(`Insufficient SOL balance. Wallet has ${lamportsToSol(balance)} SOL, but needs ~${lamportsToSol(Number(requiredLamports))} for the swap, account rent, and fees.`);
       }
     }
 
