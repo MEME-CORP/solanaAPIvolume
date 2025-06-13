@@ -73,7 +73,7 @@ async function rateLimitedRpcCall(rpcFunction, retries = 3) {
                 return await rpcFunction();
             } catch (error) {
                 if (error.message.includes('429') || error.message.includes('Too Many Requests')) {
-                    const backoffTime = Math.min(currentRpcConfig.retryBackoff * Math.pow(2, i), 16000);
+                    const backoffTime = Math.min(currentRpcConfig.retryBackoff * Math.pow(2, i), 30000);
                     console.warn(`[TransactionUtils] RPC rate limited, waiting ${backoffTime}ms (attempt ${i + 1}/${retries})`);
                     await sleep(backoffTime);
                     continue;
