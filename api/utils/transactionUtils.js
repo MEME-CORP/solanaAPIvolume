@@ -12,7 +12,7 @@ const RPC_CONFIGS = {
         name: 'Public Mainnet-Beta',
         rpcCallInterval: 1000, // 1000ms between calls (conservative for 100 req/10s = max 10 req/s)
         maxConcurrentRequests: 2, // Very low concurrent requests (limit is 40)
-        retryBackoff: 5000, // 5s backoff for 429 errors (much longer)
+        retryBackoff: 15000, // 15s backoff for 429 errors (much longer)
         confirmationTimeout: 60000, // 60s confirmation timeout (longer for rate-limited environment)
         useWebSocket: true, // Always use WebSocket to avoid polling
         description: 'Free public RPC with VERY strict rate limits - 100 req/10s total'
